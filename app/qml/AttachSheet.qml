@@ -1,6 +1,6 @@
 // What to send from the phone, the way Telegram-iOS's attach sheet comes up from the foot:
 // the pictures and videos (newest first, three a row), or every file; a tap picks one (its
-// number in the corner), "Yuborish" sends them. The files are td.recent's (nullgram.py).
+// number in the corner), "Yuborish" sends them (from Fayllar as files, as Telegram does). The files are td.recent's (nullgram.py).
 import QtQuick
 
 Item {
@@ -13,7 +13,7 @@ Item {
     property var files: []
     property var chosen: []             // paths, in the order picked
     property string tab: "media"
-    signal send(var picked)
+    signal send(var picked, bool asFiles)   // asFiles: from Fayllar -- as they are, not compressed
 
     readonly property var media: files.filter((f) => f.kind === "photo" || f.kind === "video")
     readonly property var others: files.filter((f) => f.kind !== "photo" && f.kind !== "video")
@@ -203,7 +203,7 @@ Item {
                 onClicked: {
                     const picked = sheet.chosen.map((p) => sheet.files.find((f) => f.path === p)).filter((f) => f)
                     sheet.close()
-                    sheet.send(picked)
+                    sheet.send(picked, sheet.tab === "files")
                 }
             }
         }

@@ -44,13 +44,12 @@ Item {
 
     // 5-bit values out of the packed bytes, then as many bars as fit, each the loudest of its part
     readonly property var levels: {
-        const raw = wave ? Qt.atob(wave) : ""
+        const raw = bytes(wave)
         const all = []
         const n = Math.floor(raw.length * 8 / 5)
         for (let i = 0; i < n; i++) {
             const bit = i * 5, b = bit >> 3, s = bit & 7
-            const v = ((raw.charCodeAt(b) | ((b + 1 < raw.length ? raw.charCodeAt(b + 1) : 0) << 8)) >> s) & 31
-            all.push(v)
+            all.push(((raw[b] | ((b + 1 < raw.length ? raw[b + 1] : 0) << 8)) >> s) & 31)
         }
         const bars = Math.floor((width - 56) / 4)
         const out = []
@@ -59,6 +58,24 @@ Item {
             for (let i = Math.floor(k * all.length / bars); i < Math.max(Math.floor((k + 1) * all.length / bars), Math.floor(k * all.length / bars) + 1); i++)
                 top = Math.max(top, all[i] || 0)
             out.push(top)
+        }
+        return out
+    }
+    // base64 to bytes (Qt.atob's string form is deprecated and says so in the log every time)
+    function bytes(text) {
+        const abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        const out = []
+        let acc = 0, bits = 0
+        for (const ch of text || "") {
+            const v = abc.indexOf(ch)
+            if (v < 0)
+                continue        // "=" and anything else
+            acc = (acc << 6) | v
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out.push((acc >> bits) & 255)
+            }
         }
         return out
     }

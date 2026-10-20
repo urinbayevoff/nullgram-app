@@ -166,8 +166,10 @@ QtObject {
     }
 
     function check(r) {
-        if (r["@type"] === "error")
+        if (r["@type"] === "error") {
             error = r.message
+            console.warn("nullgram: TDLib said", r.code, r.message)
+        }
     }
 
     function change(id, fields) {
@@ -569,22 +571,28 @@ QtObject {
     }
 
     // files from the phone (td.recent's): pictures and videos together as an album when there are
-    // several, the rest one by one; the field's words go under the first
-    function sendFiles(chatId, files, caption, replyTo) {
+    // several, the rest one by one; the field's words go under the first. asFiles: all as documents
+    function sendFiles(chatId, files, caption, replyTo, asFiles) {
         const text = { "@type": "formattedText", text: caption || "" }
+        // (TDLib 1.8.68: the file and its sizes go in an inputPhoto, inputVideo... of their own)
         const contents = files.map((f, k) => {
             const local = { "@type": "inputFileLocal", path: f.path }
             const c = k === 0 ? text : null
+            if (asFiles)
+                return { "@type": "inputMessageDocument", caption: c, document: { "@type": "inputDocument", document: local } }
             if (f.kind === "photo" && !f.path.toLowerCase().endsWith(".gif"))
-                return { "@type": "inputMessagePhoto", photo: local, width: f.w, height: f.h, caption: c }
+                return { "@type": "inputMessagePhoto", caption: c,
+                         photo: { "@type": "inputPhoto", photo: local, width: f.w, height: f.h } }
             if (f.kind === "video") {
                 const v = td.probe(f.path)
-                return { "@type": "inputMessageVideo", video: local, duration: v.duration, width: v.width,
-                         height: v.height, supports_streaming: true, caption: c }
+                return { "@type": "inputMessageVideo", caption: c,
+                         video: { "@type": "inputVideo", video: local, duration: v.duration, width: v.width,
+                                  height: v.height, supports_streaming: true } }
             }
             if (f.kind === "audio")
-                return { "@type": "inputMessageAudio", audio: local, duration: td.probe(f.path).duration, caption: c }
-            return { "@type": "inputMessageDocument", document: local, caption: c }
+                return { "@type": "inputMessageAudio", caption: c,
+                         audio: { "@type": "inputAudio", audio: local, duration: td.probe(f.path).duration } }
+            return { "@type": "inputMessageDocument", caption: c, document: { "@type": "inputDocument", document: local } }
         })
         const reply = replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null
         const album = contents.filter((c) => c["@type"] === "inputMessagePhoto" || c["@type"] === "inputMessageVideo")
@@ -604,8 +612,8 @@ QtObject {
         send({ "@type": "sendMessage", chat_id: chatId,
                reply_to: replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null,
                input_message_content: { "@type": "inputMessageVoiceNote",
-                                        voice_note: { "@type": "inputFileLocal", path: path },
-                                        duration: duration, waveform: waveform } }, check)
+                                        voice_note: { "@type": "inputVoiceNote", voice_note: { "@type": "inputFileLocal", path: path },
+                                                      duration: duration, waveform: waveform } } }, check)
     }
 
     // a text that is one to three emoji and nothing else: how many (it shows big, without a

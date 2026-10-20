@@ -199,6 +199,8 @@ class Td(QObject):
 	# on the test servers only: sign in by itself with this number (99966XYYYY, the code is X five times)
 	# for testing from the PC: open this chat (its id) once the chats are there (run.sh passes it on)
 	devOpen = Property(str, lambda self: os.environ.get("NULLGRAM_OPEN", ""), constant=True)
+	# and send it these lines, one message each (only with NULLGRAM_OPEN)
+	devSay = Property(str, lambda self: os.environ.get("NULLGRAM_SAY", ""), constant=True)
 	testPhone = Property(str, lambda self: os.environ.get("NULLGRAM_TEST_PHONE", "") if TEST else "", constant=True)
 
 

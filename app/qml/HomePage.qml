@@ -24,24 +24,34 @@ Page {
         }
     }
 
-    // NULLGRAM_OPEN=<chat id> or "me" (testing from the PC): that chat at once
+    // NULLGRAM_OPEN=<chat id>, its name or "me" (testing from the PC): that chat at once,
+    // unless it has unread messages (opening it would read them)
     Timer {
         running: td.devOpen !== ""
         interval: 1500
         onTriggered: {
             const me = home.store.me
             if (td.devOpen === "me" && me)
-                home.store.chatWith(me.id, (id) => home.nav.push(devChat, { chatId: id }))
-            else if (td.devOpen !== "me")
-                home.store.send({ "@type": "getChat", chat_id: Number(td.devOpen) }, (c) => {
-                    if (c["@type"] === "chat")
-                        home.nav.push(devChat, { chatId: c.id })
-                })
+                home.store.chatWith(me.id, (id) => home.devPush(id))
+            else if (td.devOpen !== "me") {      // an id, or a chat's name
+                const c = home.store.chats[td.devOpen] ||
+                          Object.values(home.store.chats).find((c) => c.title === td.devOpen)
+                if (c && c.unread_count === 0)
+                    home.devPush(c.id)
+                else
+                    console.warn("nullgram: NULLGRAM_OPEN", td.devOpen, c ? "has unread messages: not opened" : "not found")
+            }
             else
                 restart()
         }
     }
     Component { id: devChat; ChatPage {} }
+    function devPush(id) {
+        nav.push(devChat, { chatId: id })
+        for (const line of td.devSay.split("\n"))
+            if (line)
+                store.sendText(id, line, 0)
+    }
 
     function dismiss() {
         if (tab === 1 && chats.dismiss())

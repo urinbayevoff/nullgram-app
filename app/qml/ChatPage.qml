@@ -132,6 +132,11 @@ Page {
     // older messages at the end; their quotes first, so a reply within the batch needs no request
     function add(got) {
         const k = messages.count - 1
+        // one that came as an update while these were asked for is here already
+        const have = {}
+        for (let i = 0; i < messages.count; i++)
+            have[messages.get(i).msgId] = true
+        got = got.filter((m) => !have[m.id])
         for (const m of got)
             remember(m)
         for (const m of got)
@@ -294,13 +299,14 @@ Page {
         } else if (k === "voice" || k === "audio" || (k === "file" && mime.startsWith("audio/"))) {
             play(item.msgId, item.path)
         } else if (k === "file" && mime.startsWith("image/")) {
-            viewer.show(item.face, 1, "file://" + item.path)
+            viewer.show(item.face, fileAspect[item.msgId] || 1, "file://" + item.path)
             viewing = item.msgId
         } else if (k === "file") {
             save(item.msgId)
         }
     }
     property var fileMime: ({})         // a document's mime type, by message
+    property var fileAspect: ({})       // and a picture's height / width (its thumbnail's)
     property var viewing: 0             // the message full screen (its ↓ saves it)
 
     // into ~/Downloads (td.save), brought down first when it is not here
@@ -383,8 +389,12 @@ Page {
             own(m.id, p.main)
             if (p.fileName)
                 fileNames[m.id] = p.fileName
-            if (m.content.document)
-                fileMime[m.id] = m.content.document.mime_type || ""
+            const doc = m.content.document
+            if (doc) {
+                fileMime[m.id] = doc.mime_type || ""
+                if (doc.thumbnail && doc.thumbnail.width)
+                    fileAspect[m.id] = doc.thumbnail.height / doc.thumbnail.width
+            }
         }
         const words = store.plain(m.content)
         const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" ? m.reply_to : null
@@ -684,6 +694,8 @@ Page {
                 if (messages.get(i).msgId === oldId) {
                     page.remember(m)
                     messages.set(i, page.row(m))
+                    if (!messages.get(i).pic)       // (the delegate stays: it does not ask again by itself)
+                        page.loadPic(m.id)
                     return
                 }
         }
@@ -1401,10 +1413,10 @@ Page {
 
     AttachSheet {
         id: sheet
-        onSend: (picked) => {
+        onSend: (picked, asFiles) => {
             if (page.gap)
                 page.fresh()
-            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0)
+            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles)
             field.text = ""
             page.replying = null
             list.down = true
@@ -1422,7 +1434,7 @@ Page {
         color: Qt.rgba(0, 0, 0, 0.75)
         opacity: 0
         visible: opacity > 0
-        Behavior on opacity { OpacityAnimator { duration: 200 } }
+        Behavior on opacity { NumberAnimation { duration: 200 } }      // (an Animator would set it only at the end)
         Text {
             id: toastText
             anchors.centerIn: parent
@@ -1466,6 +1478,7 @@ Page {
         recordSlide = 0
         recordMs = 0
         recordFrom = Date.now()
+        mic.device = devices.defaultAudioInput     // (the one there now: it was made with what there was then)
         recorder.outputLocation = "file://" + td.voicePath()
         recording = true
         recorder.record()
@@ -1492,7 +1505,7 @@ Page {
         list.positionViewAtBeginning()
     }
     CaptureSession {
-        audioInput: AudioInput {}
+        audioInput: AudioInput { id: mic }
         recorder: MediaRecorder {
             id: recorder
             mediaFormat {
