@@ -195,20 +195,20 @@ Page {
             Object.assign(r, { picKind: t === "messageVideo" ? "video" : "gif", picW: v.width || 1, picH: v.height || 1,
                                dur: v.duration, file: still(v.thumbnail), mini: v.minithumbnail ? v.minithumbnail.data : "",
                                main: t === "messageVideo" ? v.video : v.animation, fileName: v.file_name || "",
-                               auto: t === "messageAnimation" && (v.animation.size || v.animation.expected_size) < 8e6 })
+                               auto: t === "messageAnimation" && Prefs.autoGif && (v.animation.size || v.animation.expected_size) < 8e6 })
         } else if (t === "messageSticker") {
             const st = c.sticker
             const webm = st.format["@type"] === "stickerFormatWebm"
             Object.assign(r, { picKind: "sticker", picW: st.width || 1, picH: st.height || 1,
                                file: st.format["@type"] === "stickerFormatWebp" ? st.sticker : still(st.thumbnail),
-                               main: webm ? st.sticker : null, anim: webm, auto: webm })
+                               main: webm ? st.sticker : null, anim: webm, auto: webm && Prefs.autoGif })
         } else if (t === "messageVideoNote") {
             const v = c.video_note
             Object.assign(r, { picKind: "round", picW: 1, picH: 1, dur: v.duration, file: still(v.thumbnail),
-                               mini: v.minithumbnail ? v.minithumbnail.data : "", main: v.video, auto: true })
+                               mini: v.minithumbnail ? v.minithumbnail.data : "", main: v.video, auto: Prefs.autoVoice })
         } else if (t === "messageVoiceNote") {
             const v = c.voice_note
-            Object.assign(r, { rowKind: "voice", dur: v.duration, wave: v.waveform || "", main: v.voice, auto: true })
+            Object.assign(r, { rowKind: "voice", dur: v.duration, wave: v.waveform || "", main: v.voice, auto: Prefs.autoVoice })
         } else if (t === "messageAudio") {
             const a = c.audio
             Object.assign(r, { rowKind: "audio", dur: a.duration, main: a.audio, fileName: a.file_name || "",
@@ -1020,7 +1020,7 @@ Page {
                                 anchors.fill: parent
                                 readonly property bool round: item.picKind === "round"
                                 active: item.path !== "" && page.visible && !viewer.open && item.inSight &&
-                                        (item.picKind === "gif" || item.anim || (round && page.roundId === item.msgId))
+                                        ((Prefs.autoGif && (item.picKind === "gif" || item.anim)) || (round && page.roundId === item.msgId))
                                 // (handed through here: inside sourceComponent `item` is not the delegate)
                                 readonly property string file: item.path
                                 sourceComponent: InlineVideo {
@@ -1216,7 +1216,7 @@ Page {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     elide: Text.ElideRight
-                    text: page.chat ? page.chat.title : ""
+                    text: store.title(page.chat)
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
                 }
@@ -1237,6 +1237,7 @@ Page {
                 source: page.chat ? store.photoPath(page.chat) : ""
                 letters: page.chat ? store.letters(page.chat.title) : ""
                 tint: store.tints[Math.abs(page.chatId) % store.tints.length]
+                saved: store.isSaved(page.chat)
             }
         }
 

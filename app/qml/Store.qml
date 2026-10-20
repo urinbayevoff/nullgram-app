@@ -13,6 +13,9 @@ QtObject {
     property string connection: ""      // "" when connected, else what it is doing ("ulanmoqda...")
     property var me: null
     property int unreadChats: 0         // the main list's chats with unread messages, not muted
+    property var folders: []            // the user's chat folders: [{ id, name }], in their order
+    property var folderUnread: ({})     // folder id -> its chats with unread messages, not muted
+    property int folder: 0              // the list chatList shows: 0 the main one, else that folder
 
     readonly property ListModel chatList: ListModel {}     // the main list in Telegram's order
     property var chats: ({})
@@ -133,6 +136,16 @@ QtObject {
         updateUnreadChatCount: (u) => {
             if (u.chat_list["@type"] === "chatListMain")
                 store.unreadChats = u.unread_unmuted_count
+            else if (u.chat_list["@type"] === "chatListFolder") {
+                const f = Object.assign({}, store.folderUnread)
+                f[u.chat_list.chat_folder_id] = u.unread_unmuted_count
+                store.folderUnread = f
+            }
+        },
+        updateChatFolders: (u) => {
+            store.folders = u.chat_folders.map((f) => ({ id: f.id, name: f.name.text.text }))
+            if (store.folder && !store.folders.some((f) => f.id === store.folder))
+                store.showFolder(0)
         },
     })
 
@@ -144,7 +157,7 @@ QtObject {
                    database_directory: td.dataDir + "/db", files_directory: td.dataDir + "/files",
                    use_file_database: true, use_chat_info_database: true, use_message_database: true,
                    api_id: td.apiId, api_hash: td.apiHash, system_language_code: "uz",
-                   device_model: "OmonullOS", system_version: "ztOS", application_version: "Nullgram 0.8" }, check)
+                   device_model: "OmonullOS", system_version: "ztOS", application_version: "Nullgram 0.9" }, check)
         } else if (auth === "WaitPhoneNumber" && td.testPhone) {
             send({ "@type": "setAuthenticationPhoneNumber", phone_number: td.testPhone }, check)
         } else if (auth === "WaitCode" && td.testPhone) {
@@ -182,21 +195,55 @@ QtObject {
         chatChanged(id)
     }
 
+    // a chat's place in one list (the main one, a folder, the archive) changed
     function position(id, p) {
         const c = chats[id]
-        if (!c || p.list["@type"] !== "chatListMain")
+        if (!c)
             return
-        c.positions = c.positions.filter((q) => q.list["@type"] !== "chatListMain")
+        c.positions = c.positions.filter((q) => !sameList(q.list, p.list))
         if (p.order !== "0")
             c.positions.push(p)
-        place(c)
+        if (sameList(p.list, shown()))
+            place(c)
+    }
+
+    function sameList(a, b) {
+        return a["@type"] === b["@type"] && (a["@type"] !== "chatListFolder" || a.chat_folder_id === b.chat_folder_id)
+    }
+
+    // the list chatList shows
+    function shown() {
+        return folder ? { "@type": "chatListFolder", chat_folder_id: folder } : { "@type": "chatListMain" }
     }
 
     function mainPosition(c) {
+        const list = shown()
         for (const p of c.positions)
-            if (p.list["@type"] === "chatListMain")
+            if (sameList(p.list, list))
                 return p
         return null
+    }
+
+    // another list in chatList: its chats now (sorted by their order there), then TDLib loads more
+    function showFolder(id) {
+        if (id === folder)
+            return
+        folder = id
+        chatList.clear()
+        const rows = []
+        for (const k in chats) {
+            const c = chats[k]
+            const p = mainPosition(c)
+            if (p) {
+                c.order = p.order
+                c.pinned = p.is_pinned
+                rows.push(c)
+            }
+        }
+        rows.sort((a, b) => before(a.order, b.order) ? -1 : 1)
+        for (const c of rows)
+            chatList.append(row(c))
+        send({ "@type": "loadChats", chat_list: shown(), limit: 100 })
     }
 
     // orders are int64 written as text: longer is bigger, else compare the text
@@ -263,11 +310,19 @@ QtObject {
         }
         const muted = c.notification_settings && c.notification_settings.mute_for > 0
         return {
-            chatId: c.id, title: c.title, who: who, preview: text.replace(/\s+/g, " "),
+            chatId: c.id, title: title(c), saved: isSaved(c), who: who, preview: text.replace(/\s+/g, " "),
             time: m ? stamp(m.date) : "", unread: c.unread_count || 0, muted: muted, pinned: !!c.pinned,
             photo: photoPath(c), letters: letters(c.title), tint: tints[Math.abs(c.id) % tints.length],
             outgoing: !!(m && m.is_outgoing), read: !!(m && m.is_outgoing && m.id <= (c.last_read_outbox_message_id || 0))
         }
+    }
+
+    // one's own chat is Saved Messages, as Telegram calls it
+    function isSaved(c) {
+        return !!(c && me && c.type["@type"] === "chatTypePrivate" && c.type.user_id === me.id)
+    }
+    function title(c) {
+        return isSaved(c) ? "Saqlangan xabarlar" : c ? c.title : ""
     }
 
     readonly property var tints: ["#ff516a", "#ffa85c", "#a685ff", "#54cb68", "#28c9b7", "#2a9ef1", "#d669ed"]

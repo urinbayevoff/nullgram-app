@@ -63,6 +63,7 @@ Page {
             required property int index
             required property var chatId
             required property string title
+            required property bool saved
             required property string who
             required property string preview
             required property string time
@@ -82,7 +83,7 @@ Page {
             Avatar {
                 x: 10; y: 8
                 width: 60; height: 60
-                source: row.photo; letters: row.letters; tint: row.tint
+                source: row.photo; letters: row.letters; tint: row.tint; saved: row.saved
             }
             Text {
                 id: name

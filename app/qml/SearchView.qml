@@ -58,7 +58,7 @@ Rectangle {
         results.clear()
         const chatRow = (id, sub) => {
             const c = store.chats[id]
-            results.append({ kind: "chat", chatId: id, msgId: 0, title: c.title, sub: sub, time: "",
+            results.append({ kind: "chat", chatId: id, msgId: 0, title: store.title(c), sub: sub, time: "",
                              photo: store.photoPath(c), letters: store.letters(c.title),
                              tint: store.tints[Math.abs(id) % store.tints.length] })
         }
@@ -78,7 +78,7 @@ Rectangle {
                 const c = store.chats[m.chat_id]
                 if (!c)
                     continue
-                results.append({ kind: "message", chatId: m.chat_id, msgId: m.id, title: c.title,
+                results.append({ kind: "message", chatId: m.chat_id, msgId: m.id, title: store.title(c),
                                  sub: store.preview(m.content).replace(/\s+/g, " "), time: store.stamp(m.date),
                                  photo: store.photoPath(c), letters: store.letters(c.title),
                                  tint: store.tints[Math.abs(m.chat_id) % store.tints.length] })

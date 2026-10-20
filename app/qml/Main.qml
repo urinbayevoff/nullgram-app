@@ -28,10 +28,24 @@ Rectangle {
     Component { id: loginPage; LoginPage {} }
     Component { id: chatsPage; HomePage {} }
 
-    // the night theme, kept (~/.config/OmonullOS/Nullgram.conf)
-    Settings { id: prefs; property bool dark: false }
-    Component.onCompleted: Theme.dark = prefs.dark
+    // the night theme and the other choices, kept (~/.config/OmonullOS/Nullgram.conf)
+    Settings {
+        id: prefs
+        property bool dark: false
+        property bool autoGif: true
+        property bool autoVoice: true
+    }
+    Component.onCompleted: {
+        Theme.dark = prefs.dark
+        Prefs.autoGif = prefs.autoGif
+        Prefs.autoVoice = prefs.autoVoice
+    }
     Connections { target: Theme; function onDarkChanged() { prefs.dark = Theme.dark } }
+    Connections {
+        target: Prefs
+        function onAutoGifChanged() { prefs.autoGif = Prefs.autoGif }
+        function onAutoVoiceChanged() { prefs.autoVoice = Prefs.autoVoice }
+    }
 
     // the first page: the sign-in until Telegram says we are in, then the chats
     property string base: store.auth === "Ready" ? "chats" : store.auth === "" ? "" : "login"

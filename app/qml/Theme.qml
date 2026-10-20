@@ -18,6 +18,8 @@ QtObject {
     readonly property color accent: dark ? "#3e88f7" : "#0088ff"
     readonly property color badge: accent
     readonly property color mutedBadge: dark ? "#666666" : "#b6b6bb"
+    readonly property color grouped: dark ? "#000000" : "#efeff4"      // iOS's grouped lists: the page
+    readonly property color card: dark ? "#1c1c1d" : "#ffffff"         // and their cards
     readonly property color highlight: dark ? "#2c2c2e" : "#e5e5ea"
     readonly property color menu: dark ? Qt.rgba(0.14, 0.14, 0.15, 0.96) : Qt.rgba(1, 1, 1, 0.96)
     readonly property color dayPill: dark ? Qt.rgba(0, 0, 0, 0.4) : Qt.rgba(0.2, 0.33, 0.22, 0.35)

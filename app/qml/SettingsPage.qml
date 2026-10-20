@@ -1,11 +1,15 @@
-// Settings, as far as there are any yet: who is signed in, the night theme, what this is.
+// Settings, laid out as Telegram-iOS's (IMG_0298): who is signed in at the top, then rounded
+// groups of rows with coloured icons. What works opens a page of its own (ProfilePage,
+// DevicesPage, FoldersPage, StoragePage, AppearancePage); the rest waits for later.
 // (Signing out waits: TDLib's client closes on it, and a new one has to be made.)
 import QtQuick
 
 Page {
     id: page
+    color: Theme.grouped
     property string photo: ""
     property string tdVersion: ""
+    property int devices: 0
     onVisibleChanged: if (visible) {
         if (!photo && store.me)
             store.userPhoto(store.me, (path) => page.photo = path)
@@ -14,8 +18,16 @@ Page {
                 if (r.value)
                     page.tdVersion = r.value
             })
+        store.send({ "@type": "getActiveSessions" }, (r) => {
+            if (r.sessions)
+                page.devices = r.sessions.length
+        })
     }
     readonly property var me: store.me
+
+    function open(component) {
+        nav.push(component, {})
+    }
 
     Flickable {
         anchors.fill: parent
@@ -23,20 +35,12 @@ Page {
         Column {
             id: column
             width: parent.width
-            Item {
-                width: parent.width; height: 56
-                Text {
-                    anchors.centerIn: parent
-                    text: "Sozlamalar"
-                    color: Theme.text
-                    font.family: Theme.font; font.pixelSize: 17; font.weight: Font.DemiBold
-                }
-            }
+            spacing: 22
             Item {           // who is signed in
                 width: parent.width; height: 196
                 Avatar {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    y: 8
+                    y: 18
                     width: 96; height: 96
                     source: page.photo
                     letters: page.me ? store.letters(page.me.first_name + " " + page.me.last_name) : ""
@@ -44,14 +48,14 @@ Page {
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    y: 116
+                    y: 124
                     text: page.me ? (page.me.first_name + " " + page.me.last_name).trim() : ""
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 24; font.weight: Font.DemiBold
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    y: 150
+                    y: 158
                     text: !page.me ? "" : ("+" + page.me.phone_number) +
                           (page.me.usernames && page.me.usernames.active_usernames.length
                            ? "  ·  @" + page.me.usernames.active_usernames[0] : "")
@@ -60,91 +64,36 @@ Page {
                 }
             }
 
-            Rectangle {      // Saved Messages: one's own chat, as Telegram-iOS's settings open it
-                x: 16; width: parent.width - 32
-                height: 50
-                radius: 12
-                color: saved.pressed ? Theme.highlight : Theme.dark ? "#1c1c1d" : "#f2f2f7"
-                Rectangle {
-                    x: 12; anchors.verticalCenter: parent.verticalCenter
-                    width: 30; height: 30; radius: 7
-                    color: "#2a9ef1"
-                    Text { anchors.centerIn: parent; text: "🔖"; font.pixelSize: 15 }
-                }
-                Text {
-                    x: 54; anchors.verticalCenter: parent.verticalCenter
-                    text: "Saqlangan xabarlar"
-                    color: Theme.text
-                    font.family: Theme.font; font.pixelSize: 16
-                }
-                Text {
-                    anchors.right: parent.right; anchors.rightMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "›"
-                    color: Theme.grey
-                    font.family: Theme.font; font.pixelSize: 22
-                }
-                MouseArea {
-                    id: saved
-                    anchors.fill: parent
+            SettingsGroup {
+                SettingsRow { icon: "person"; tint: "#ff3b30"; text: "Mening profilim"; last: true; onClicked: page.open(profilePage) }
+            }
+            SettingsGroup {
+                SettingsRow {
+                    icon: "bookmark"; tint: "#007aff"; text: "Saqlangan xabarlar"
                     onClicked: if (page.me) store.chatWith(page.me.id, (id) => page.nav.push(chatPage, { chatId: id }))
                 }
+                SettingsRow { icon: "laptop"; tint: "#ff9500"; text: "Qurilmalar"; value: page.devices ? page.devices : ""; onClicked: page.open(devicesPage) }
+                SettingsRow { icon: "folder"; tint: "#32ade6"; text: "Chat papkalari"; value: store.folders.length ? store.folders.length : ""; last: true; onClicked: page.open(foldersPage) }
             }
-            Item { width: 1; height: 20 }
-
-            Rectangle {      // a group of rows, rounded, as iOS lists settings
-                x: 16; width: parent.width - 32
-                height: rows.height
-                radius: 12
-                color: Theme.dark ? "#1c1c1d" : "#f2f2f7"
-                Column {
-                    id: rows
-                    width: parent.width
-                    Item {
-                        width: parent.width; height: 50
-                        Text {
-                            x: 16; anchors.verticalCenter: parent.verticalCenter
-                            text: "Tungi rejim"
-                            color: Theme.text
-                            font.family: Theme.font; font.pixelSize: 16
-                        }
-                        Rectangle {          // a switch, iOS-like
-                            id: sw
-                            anchors.right: parent.right; anchors.rightMargin: 14
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 51; height: 31; radius: 15.5
-                            color: Theme.dark ? "#34c759" : "#e9e9ea"
-                            Behavior on color { ColorAnimation { duration: 200 } }
-                            Rectangle {
-                                y: 2; width: 27; height: 27; radius: 13.5
-                                x: Theme.dark ? parent.width - width - 2 : 2
-                                color: "white"
-                                Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-                            }
-                        }
-                        MouseArea { anchors.fill: parent; onClicked: Theme.dark = !Theme.dark }
-                    }
-                    Rectangle { x: 16; width: parent.width - 16; height: 0.5; color: Theme.separator }
-                    Item {
-                        width: parent.width; height: 50
-                        Text {
-                            x: 16; anchors.verticalCenter: parent.verticalCenter
-                            text: "Ilova haqida"
-                            color: Theme.text
-                            font.family: Theme.font; font.pixelSize: 16
-                        }
-                        Text {
-                            anchors.right: parent.right; anchors.rightMargin: 16
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "Nullgram 0.8" + (page.tdVersion ? " · TDLib " + page.tdVersion : "")
-                            color: Theme.grey
-                            font.family: Theme.font; font.pixelSize: 15
-                        }
-                    }
+            SettingsGroup {
+                SettingsRow { icon: "data"; tint: "#34c759"; text: "Ma'lumotlar va xotira"; onClicked: page.open(storagePage) }
+                SettingsRow { icon: "halfmoon"; tint: "#5ac8fa"; text: "Ko'rinish"; value: Theme.dark ? "Tungi" : "Kunduzgi"; onClicked: page.open(appearancePage) }
+                SettingsRow { icon: "globe"; tint: "#af52de"; text: "Til"; value: "O'zbekcha"; chevron: false; last: true }
+            }
+            SettingsGroup {
+                note: "Nullgram — OmonullOS uchun Telegram (Qt Quick + TDLib)."
+                SettingsRow {
+                    icon: "info"; tint: "#8e8e93"; text: "Ilova haqida"; chevron: false; last: true
+                    value: "0.9" + (page.tdVersion ? " · TDLib " + page.tdVersion : "")
                 }
             }
         }
     }
 
     Component { id: chatPage; ChatPage {} }
+    Component { id: profilePage; ProfilePage {} }
+    Component { id: devicesPage; DevicesPage {} }
+    Component { id: foldersPage; FoldersPage {} }
+    Component { id: storagePage; StoragePage {} }
+    Component { id: appearancePage; AppearancePage {} }
 }
