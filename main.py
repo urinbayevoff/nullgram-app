@@ -5,6 +5,12 @@ same app fits the Galaxy S10 5G and other phones. Telegram itself runs on
 tg.Backend's own thread; this file only draws and reacts to its signals.
 """
 import itertools
+import os
+
+# Qt draws letters over 64 pixels from their outlines every time, uncached; at
+# the S10's 4x that is all of them (a 21-point name is 84 pixels). Cached they
+# draw 4x faster. Read when the first text is drawn, so before anything is.
+os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
@@ -12,7 +18,7 @@ from PySide6.QtCore import Qt
 
 import ztos
 from tg import Backend, preview
-from views import Bubble, ChatRow, DayLabel, List, QrView, stamp_now
+from views import Bubble, ChatRow, DayLabel, List, QrView, TiledPage, stamp_now
 
 app = ztos.App()
 tg = Backend()
@@ -87,13 +93,20 @@ class PhoneLogin(ztos.Page):
 		self.error.setText(text)
 
 
-class Chats(ztos.Page):
-	"""Every chat, pinned first then newest, as in the People hub's list."""
+class Chats(TiledPage):
+	"""Every chat, pinned first then newest, as in the People hub's list.
+
+	New messages (channels send many) are gathered and put on the list together,
+	every 1.5 s at most and only while it is still: each one moves a row, and a
+	moved row means tiles drawn again."""
 
 	def __init__(self):
 		super().__init__("chatlar")
 		self.chat_list = self.add(List())
 		self.rows = {}
+		self._waiting = {}
+		self._apply = QTimer(self, singleShot=True, interval=1500)
+		self._apply.timeout.connect(self._apply_waiting)
 		self.bar(ztos.RoundButton("refresh", "yangilash", self.refresh),
 		         ztos.RoundButton("settings", "sozlamalar", lambda: app.push(Settings())))
 		tg.chats.connect(self._chats)
@@ -119,13 +132,24 @@ class Chats(ztos.Page):
 		update_tile()
 
 	def _incoming(self, msg: dict, chat: dict):
-		row = self.rows.get(chat["id"])
-		if row is None:
-			row = ChatRow(chat, open_chat)
-			self.rows[chat["id"]] = row
-		else:
-			row.update_chat(chat)
-		self._to_top(row)
+		self._waiting.pop(chat["id"], None)
+		self._waiting[chat["id"]] = chat		# (newest last)
+		if not self._apply.isActive():
+			self._apply.start()
+
+	def _apply_waiting(self):
+		if self._gl_on or self._flinging() or ztos._animating():
+			self._apply.start()
+			return
+		waiting, self._waiting = self._waiting, {}
+		for chat in waiting.values():
+			row = self.rows.get(chat["id"])
+			if row is None:
+				row = ChatRow(chat, open_chat)
+				self.rows[chat["id"]] = row
+			else:
+				row.update_chat(chat)
+			self._to_top(row)
 		update_tile()
 
 	def _touch(self, chat_id: int):
@@ -143,8 +167,9 @@ class Chats(ztos.Page):
 		self.chat_list.add(row, pinned)
 
 
-class Chat(ztos.Page):
-	"""One conversation: bubbles, newest at the bottom, and a box to write in."""
+class Chat(TiledPage):
+	"""One conversation: bubbles, newest at the bottom, and a box to write in
+	under them that stays put (off the list, so its cursor is not a change of it)."""
 
 	def __init__(self, chat: dict):
 		super().__init__(chat["name"])
@@ -152,7 +177,9 @@ class Chat(ztos.Page):
 		self.ids = {}
 		self.last_day = None
 		self.bubbles = self.add(List())
-		self.box = self.textbox("", placeholder="xabar yozing", on_submit=lambda _: self.send())
+		self.box = ztos.TextBox(placeholder="xabar yozing", on_submit=lambda _: self.send())
+		self.box.setContentsMargins(ztos.MARGIN, 6, ztos.MARGIN, 6)
+		self.layout().addWidget(self.box)
 		self.bar(ztos.RoundButton("send", "yuborish", self.send))
 		tg.history.connect(self._history)
 		tg.incoming.connect(self._incoming)
