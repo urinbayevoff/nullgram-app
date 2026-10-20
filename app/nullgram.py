@@ -1,13 +1,13 @@
-"""Tepegram next: Telegram the way Telegram-iOS shows it, on Qt Quick + TDLib.
+"""Nullgram: Telegram the way Telegram-iOS shows it, on Qt Quick + TDLib.
 
 QML draws everything and keeps the state (qml/Store.qml); this file only loads
-TDLib and carries its JSON both ways. Rule (next/NOTES.md): no Python on the
+TDLib and carries its JSON both ways. Rule (NOTES.md): no Python on the
 render thread and none in the UI thread's hot paths -- TDLib's answers are read
 on a thread of our own (ctypes lets the interpreter go while it waits) and
 reach QML as queued signals, which QML takes without Python.
 
-  python3 tepegram.py [--test-dc]      (--test-dc: Telegram's test servers, a throwaway account;
-                                       TEPEGRAM_TEST_PHONE=99966XYYYY signs in there by itself)
+  python3 nullgram.py [--test-dc]      (--test-dc: Telegram's test servers, a throwaway account;
+                                       NULLGRAM_TEST_PHONE=99966XYYYY signs in there by itself)
 """
 import base64
 import ctypes
@@ -25,10 +25,10 @@ from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = "--test-dc" in sys.argv
-DATA = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.tepegram.next" + (".test" if TEST else ""))
-KEY = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.tepegram/api.json")	# v0.6's (tools/deploy.sh --key)
+DATA = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.nullgram" + (".test" if TEST else ""))
+KEY = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.nullgram/api.json")	# install.sh --key
 LIBS = [os.path.expanduser("~/.local/td/lib/libtdjson.so"), "libtdjson.so"]
-VENDOR = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.tepegram/vendor")	# qrcode
+VENDOR = os.path.join(HERE, "vendor")	# qrcode (install.sh)
 if os.path.isdir(VENDOR):
 	sys.path.insert(0, VENDOR)
 
@@ -92,7 +92,7 @@ class Td(QObject):
 	dataDir = Property(str, lambda self: DATA, constant=True)
 	testDc = Property(bool, lambda self: TEST, constant=True)
 	# on the test servers only: sign in by itself with this number (99966XYYYY, the code is X five times)
-	testPhone = Property(str, lambda self: os.environ.get("TEPEGRAM_TEST_PHONE", "") if TEST else "", constant=True)
+	testPhone = Property(str, lambda self: os.environ.get("NULLGRAM_TEST_PHONE", "") if TEST else "", constant=True)
 
 
 class Round(QQuickImageProvider):
@@ -232,6 +232,7 @@ class Wall(QQuickImageProvider):
 
 def main():
 	app = QGuiApplication(sys.argv)
+	app.setDesktopFileName("ztos.uz.omonullos.nullgram")	# the shell knows its window by this (install.sh)
 	td = Td()
 	view = QQuickView()
 	view.setColor("black")

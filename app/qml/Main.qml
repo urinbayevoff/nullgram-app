@@ -1,4 +1,4 @@
-// Tepegram next. Pages go on and off as Telegram-iOS's navigation does
+// Nullgram. Pages go on and off as Telegram-iOS's navigation does
 // (Display/NavigationTransitionCoordinator.swift): the new page from the right,
 // the one under it 0.3 of the width to the left and dimmed to 0.15, a shadow at
 // the new page's edge; 0.5 s on the iOS 26 spring. A page is made, filled and

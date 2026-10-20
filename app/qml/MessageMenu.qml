@@ -1,5 +1,5 @@
 // A message's menu the way Telegram-iOS opens it (ContextControllerExtractedPresentationNode.swift,
-// next/NOTES.md): the chat behind blurs, the bubble is lifted out of it and springs to where its
+// NOTES.md): the chat behind blurs, the bubble is lifted out of it and springs to where its
 // actions fit under it, the actions grow from the bubble with a small overshoot. Everything
 // that moves is an Animator (render thread); the blur is one picture taken as it opens.
 import QtQuick

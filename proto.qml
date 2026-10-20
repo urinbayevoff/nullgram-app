@@ -1,4 +1,4 @@
-// Tepegram "next": does Qt Quick stay smooth on the phone while Python is busy?
+// Nullgram (then "Tepegram next"): does Qt Quick stay smooth on the phone while Python is busy?
 // A list of 1000 chats; a tap pushes a chat page as Telegram-iOS does
 // (Display/NavigationTransitionCoordinator.swift): the new page from the
 // right, the one under it 0.3 of the width to the left, dimmed to 0.15, a

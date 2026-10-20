@@ -1,6 +1,6 @@
-# Tepegram next: iOS Telegram's logic on Qt Quick
+# Nullgram (was "Tepegram next"): iOS Telegram's logic on Qt Quick
 
-Owner's decision (2026-10-20 evening): rewrite Tepegram the way Telegram-iOS works.
+Owner's decision (2026-10-20 evening): rewrite Tepegram (now Nullgram) the way Telegram-iOS works.
 Its videos of iOS Telegram (iPhone, iOS 26, 384×848 ~30 fps screen recordings) are in
 `~/work/tepegram-ref/videos/` (IMG_0294 chat open, 0295 folders, 0296 tab bar /
 liquid glass, 0297 channels + media, 0298 settings, 0299 writing, 0300 context menu edit).

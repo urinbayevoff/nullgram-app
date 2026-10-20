@@ -1,4 +1,4 @@
-// A round picture (cut round once, off the UI thread: image://round/ in tepegram.py),
+// A round picture (cut round once, off the UI thread: image://round/ in nullgram.py),
 // over the initials on the chat's colour until it comes.
 import QtQuick
 

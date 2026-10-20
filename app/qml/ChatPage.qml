@@ -513,7 +513,7 @@ Page {
                             radius: 17
                             color: item.out ? Theme.bubbleOut : Theme.bubbleIn
                         }
-                        BorderImage {   // the bubble, stretched from a small picture (tepegram.py Bubble), drawn
+                        BorderImage {   // the bubble, stretched from a small picture (nullgram.py Bubble), drawn
                             id: shape       // in device pixels and scaled down: then its borders come out right
                             readonly property real d: Screen.devicePixelRatio
                             x: item.out ? 0 : -6

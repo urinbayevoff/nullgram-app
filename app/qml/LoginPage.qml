@@ -15,7 +15,7 @@ Page {
         spacing: 18
 
         Text {
-            text: "Tepegram"
+            text: "Nullgram"
             color: Theme.text
             font.family: Theme.font; font.pixelSize: 30; font.weight: Font.Bold
         }
