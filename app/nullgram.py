@@ -236,6 +236,8 @@ class Wall(QQuickImageProvider):
 
 def main():
 	app = QGuiApplication(sys.argv)
+	app.setOrganizationName("OmonullOS")
+	app.setApplicationName("Nullgram")
 	app.setDesktopFileName("ztos.uz.omonullos.nullgram")	# the shell knows its window by this (install.sh)
 	td = Td()
 	view = QQuickView()

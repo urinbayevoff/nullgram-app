@@ -12,6 +12,7 @@ QtObject {
     property string error: ""
     property string connection: ""      // "" when connected, else what it is doing ("ulanmoqda...")
     property var me: null
+    property int unreadChats: 0         // the main list's chats with unread messages, not muted
 
     readonly property ListModel chatList: ListModel {}     // the main list in Telegram's order
     property var chats: ({})
@@ -30,6 +31,7 @@ QtObject {
     signal messageContent(var chatId, var id, var content)
     signal messageEdited(var chatId, var id, var date)
     signal readOutbox(var chatId, var lastRead)
+    signal chatChanged(var chatId)      // fields of a chat changed (an open chat page reads them again)
 
     // ---- talking to TDLib ----------------------------------------------------
     function send(req, done) {
@@ -127,6 +129,10 @@ QtObject {
         updateMessageEdited: (u) => store.messageEdited(u.chat_id, u.message_id, u.edit_date),
         updateDeleteMessages: (u) => { if (u.is_permanent) store.messagesDeleted(u.chat_id, u.message_ids) },
         updateFile: (u) => store.file(u.file),
+        updateUnreadChatCount: (u) => {
+            if (u.chat_list["@type"] === "chatListMain")
+                store.unreadChats = u.unread_unmuted_count
+        },
     })
 
     function authorization(s) {
@@ -137,7 +143,7 @@ QtObject {
                    database_directory: td.dataDir + "/db", files_directory: td.dataDir + "/files",
                    use_file_database: true, use_chat_info_database: true, use_message_database: true,
                    api_id: td.apiId, api_hash: td.apiHash, system_language_code: "uz",
-                   device_model: "OmonullOS", system_version: "ztOS", application_version: "0.7-next" }, check)
+                   device_model: "OmonullOS", system_version: "ztOS", application_version: "Nullgram 0.8" }, check)
         } else if (auth === "WaitPhoneNumber" && td.testPhone) {
             send({ "@type": "setAuthenticationPhoneNumber", phone_number: td.testPhone }, check)
         } else if (auth === "WaitCode" && td.testPhone) {
@@ -170,6 +176,7 @@ QtObject {
         for (const k in fields)
             c[k] = fields[k]
         refresh(c)
+        chatChanged(id)
     }
 
     function position(id, p) {
@@ -308,7 +315,11 @@ QtObject {
         }
         if (t !== "chatTypePrivate")
             return ""
-        const u = users[c.type.user_id]
+        return userStatus(users[c.type.user_id], now)
+    }
+
+    // a person's: "onlayn", "bugun 14:05 da bo'lgan", "bot", ...
+    function userStatus(u, now) {
         if (!u || (me && u.id === me.id))
             return ""
         if (u.id === 777000)
@@ -542,5 +553,114 @@ QtObject {
 
     function deleteMessages(chatId, ids, everyone) {
         send({ "@type": "deleteMessages", chat_id: chatId, message_ids: ids, revoke: everyone }, check)
+    }
+
+    // ---- search ----------------------------------------------------------------
+    // Uzbek Cyrillic as its Latin, so "Шавкат" is found by "shavkat" and the other way round;
+    // small letters, no apostrophes (o'/oʻ/o` all one)
+    readonly property var _latin: ({
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo", "ж": "j", "з": "z", "и": "i",
+        "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+        "у": "u", "ф": "f", "х": "x", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "", "ы": "i", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya", "ў": "o", "қ": "q", "ғ": "g", "ҳ": "h",
+        "'": "", "`": "", "ʻ": "", "ʼ": "", "‘": "", "’": ""
+    })
+    function fold(text) {
+        let out = ""
+        for (const ch of (text || "").toLowerCase()) {
+            const l = _latin[ch]
+            out += l === undefined ? ch : l
+        }
+        return out
+    }
+
+    // chats for a query, as fast as each comes: ours by name from what is loaded (at once), then
+    // TDLib's (its database, then the server's), then public ones; `done(kind, ids)` each time,
+    // kind "chats" or "global". A newer query makes the older answers be dropped (by `asked`).
+    property int _query: 0
+    function searchChats(q, done) {
+        const asked = ++_query
+        const f = fold(q)
+        const local = []
+        for (const id in chats) {
+            const c = chats[id]
+            const u = c.type["@type"] === "chatTypePrivate" ? users[c.type.user_id] : null
+            const names = fold(c.title) + " " + (u && u.usernames ? fold(u.usernames.active_usernames.join(" ")) : "")
+            if (c.positions.length && names.indexOf(f) >= 0)
+                local.push(c.id)
+        }
+        local.sort((a, b) => before(chats[a].order || "0", chats[b].order || "0") ? -1 : 1)
+        done("chats", local.slice(0, 50))
+        const mine = local.slice()
+        const more = (r) => {
+            if (asked !== _query || !r.chat_ids)
+                return
+            for (const id of r.chat_ids)
+                if (mine.indexOf(id) < 0 && chats[id])
+                    mine.push(id)
+            done("chats", mine.slice(0, 50))
+        }
+        send({ "@type": "searchChats", query: q, limit: 50 }, more)
+        send({ "@type": "searchChatsOnServer", query: q, limit: 50 }, more)
+        if (q.replace(/^@/, "").length >= 4)
+            send({ "@type": "searchPublicChats", query: q.replace(/^@/, "") }, (r) => {
+                if (asked === _query && r.chat_ids)
+                    done("global", r.chat_ids.filter((id) => mine.indexOf(id) < 0 && chats[id]))
+            })
+    }
+
+    // messages with the query in every chat, newest first: `done(messages)`
+    function searchMessages(q, done) {
+        const asked = _query
+        send({ "@type": "searchMessages", chat_list: null, query: q, offset: "", limit: 40,
+               filter: null, chat_type_filter: null, min_date: 0, max_date: 0 }, (r) => {
+            if (asked === _query)
+                done(r.messages || [])
+        })
+    }
+
+    // ---- contacts --------------------------------------------------------------
+    // the contacts, by name: `done([user])` (users not yet known are asked for first)
+    function contacts(done) {
+        send({ "@type": "getContacts" }, (r) => {
+            const ids = r.user_ids || []
+            let left = 0
+            const finish = () => {
+                const list = ids.map((id) => users[id]).filter((u) => u)
+                list.sort((a, b) => fold(a.first_name + " " + a.last_name) < fold(b.first_name + " " + b.last_name) ? -1 : 1)
+                done(list)
+            }
+            for (const id of ids)
+                if (!users[id]) {
+                    left++
+                    send({ "@type": "getUser", user_id: id }, (u) => {
+                        if (u["@type"] === "user")
+                            users[u.id] = u
+                        if (--left === 0)
+                            finish()
+                    })
+                }
+            if (left === 0)
+                finish()
+        })
+    }
+
+    // a person's chat (made if there is none yet): `done(chatId)`
+    function chatWith(userId, done) {
+        send({ "@type": "createPrivateChat", user_id: userId, force: false }, (c) => {
+            if (c["@type"] === "chat") {
+                if (!chats[c.id]) {
+                    c.positions = c.positions || []
+                    chats[c.id] = c
+                }
+                done(c.id)
+            }
+        })
+    }
+
+    // a user's small picture's path, now or later: `done(path)`
+    function userPhoto(u, done) {
+        if (u && u.profile_photo && u.profile_photo.small)
+            fetch(u.profile_photo.small, 1, done)
     }
 }

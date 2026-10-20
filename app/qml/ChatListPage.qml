@@ -1,10 +1,26 @@
 // The chats, as Telegram-iOS lists them (ChatListItem.swift): a round picture, the
 // name and time on one line, two lines of the last message under it, the unread
 // count in a pill. A tap lights the row at once; the chat comes in when it is ready.
+// Over the list, as on iOS 26: the title in the middle and the search box under it; a tap
+// on the box turns the page into the search (SearchView).
 import QtQuick
 
 Page {
     id: page
+    property bool searching: false
+    // chats with something unread (not muted): the tab bar's badge
+    readonly property int unreadChats: store.unreadChats
+
+    function toTop() {
+        list.positionViewAtBeginning()
+    }
+    function dismiss() {
+        if (searching) {
+            search.close()
+            return true
+        }
+        return false
+    }
 
     ListView {
         id: list
@@ -17,18 +33,30 @@ Page {
         header: Item {
             width: list.width; height: 104
             Text {
-                x: 16; y: 52
-                text: "Chatlar"
-                color: Theme.text
-                font.family: Theme.font; font.pixelSize: 32; font.weight: Font.Bold
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: 16
+                text: store.connection || "Chatlar"
+                color: store.connection ? Theme.grey : Theme.text
+                font.family: Theme.font; font.pixelSize: 17; font.weight: Font.DemiBold
             }
-            Text {
-                x: 16; y: 32
-                text: store.connection
-                color: Theme.grey
-                font.family: Theme.font; font.pixelSize: 13
+            Rectangle {          // the search box: a tap opens the search
+                x: 14; y: 52
+                width: parent.width - 28; height: 38; radius: 19
+                color: Theme.dark ? Qt.rgba(0.46, 0.46, 0.5, 0.24) : Qt.rgba(0.46, 0.46, 0.5, 0.12)
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Icon { name: "search"; width: 18; height: 18; color: Theme.grey; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        text: "Qidiruv"
+                        color: Theme.grey
+                        font.family: Theme.font; font.pixelSize: 16
+                    }
+                }
+                MouseArea { anchors.fill: parent; onClicked: search.show() }
             }
         }
+        footer: Item { width: 1; height: 90 }      // room over the tab bar
 
         delegate: Rectangle {
             id: row
@@ -122,4 +150,13 @@ Page {
     }
 
     Component { id: chatPage; ChatPage {} }
+
+    SearchView {
+        id: search
+        anchors.fill: parent
+        store: page.store
+        onOpenChanged: page.searching = open
+        onPicked: (chatId, messageId) => page.nav.push(chatPage, messageId ? { chatId: chatId, target: messageId }
+                                                                            : { chatId: chatId })
+    }
 }

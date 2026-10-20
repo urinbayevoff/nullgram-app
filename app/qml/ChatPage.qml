@@ -8,6 +8,8 @@ import QtQuick.Window
 Page {
     id: page
     required property var chatId
+    property var target: 0              // open at this message (found by search) and light it up
+    property var flashId: 0
     readonly property var chat: store.chats[chatId]
     readonly property bool group: chat && (chat.type["@type"] === "chatTypeBasicGroup" ||
                                            (chat.type["@type"] === "chatTypeSupergroup" && !chat.type.is_channel))
@@ -15,6 +17,14 @@ Page {
     ready: false
     property bool loading: false
     property bool more: true
+    // opened at the first unread message: the newest are not loaded yet (they come as it is
+    // scrolled down, or all at once from ↓), and new ones wait for them
+    property bool gap: false
+    property bool newering: false
+    property var firstUnread: 0         // the "O'qilmagan xabarlar" bar goes over this message
+    property var readTo: 0              // the newest message TDLib was told is seen
+    property int unread: chat ? chat.unread_count : 0
+    property bool away: false           // the newest are out of sight (↓ shows)
 
     ListModel { id: messages }       // newest first: the list runs bottom to top
 
@@ -48,23 +58,84 @@ Page {
                     }
                 })
         }
+        readTo = chat ? chat.last_read_inbox_message_id : 0
+        if (target)
+            openAt(target, false)
+        else if (chat && chat.unread_count > 0 && readTo)
+            openAt(readTo, true)
+        else
+            fresh()
+    }
+
+    // the newest messages, the list at the bottom
+    function fresh() {
+        messages.clear()
+        gap = false
+        more = true
+        list.down = true
         store.history(chatId, 0, 30, (got) => {
             if (!page)          // closed before TDLib answered
                 return
             page.add(got)
+            list.positionViewAtBeginning()
             page.ready = true
-            page.read(got)
+            Qt.callLater(page.seen)
             Qt.callLater(page.nearTop)          // a screen not yet full: more at once
+        })
+    }
+
+    // as Telegram opens a chat with unread messages: around the last one read, the first unread
+    // under the bar at the top of the screen; or (`unread` false) around a message found, in the middle
+    function openAt(id, unread) {
+        store.send({ "@type": "getChatHistory", chat_id: chatId, from_message_id: id, offset: unread ? -30 : -20,
+                     limit: unread ? 50 : 40, only_local: false }, (r) => {
+            if (!page)
+                return
+            const got = r.messages || []
+            if (!got.length) {
+                page.fresh()
+                return
+            }
+            const last = page.chat && page.chat.last_message
+            page.gap = !(last && got[0].id >= last.id)
+            if (unread)
+                for (let k = got.length - 1; k >= 0; k--)
+                    if (got[k].id > page.readTo && !got[k].is_outgoing) {
+                        page.firstUnread = got[k].id
+                        break
+                    }
+            page.add(got)
+            if (!unread) {
+                const t = page.indexOf(id)
+                if (t >= 0)
+                    list.positionViewAtIndex(t, ListView.Center)
+                page.flashId = id
+                unflash.restart()
+            }
+            const i = unread ? page.indexOf(page.firstUnread) : -1
+            if (i >= 0) {
+                list.positionViewAtIndex(i, ListView.End)      // (the end of a bottom-to-top list: its top)
+                list.contentY = Math.max(list.originY, list.contentY - bar.height)   // not under the header
+            }
+            list.down = false
+            page.ready = true
+            Qt.callLater(page.seen)
+            Qt.callLater(page.nearTop)
+            Qt.callLater(page.nearBottom)
         })
     }
     Component.onDestruction: store.send({ "@type": "closeChat", chat_id: chatId })
 
     // older messages at the end; their quotes first, so a reply within the batch needs no request
     function add(got) {
+        const k = messages.count - 1
         for (const m of got)
             remember(m)
         for (const m of got)
             messages.append(row(m))
+        // the one that was the oldest has neighbours now: its day and run are worked out again
+        if (k >= 0 && got.length)
+            messages.setProperty(k, "edge", messages.get(k).edge + 1)
     }
 
     function remember(m) {
@@ -173,7 +244,7 @@ Page {
             edited: m.edit_date > 0,
             replyId: r ? r.message_id : 0,
             quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : ""),
-            picKind: p.picKind, picW: p.picW, picH: p.picH, mini: p.mini, dur: p.dur,
+            picKind: p.picKind, picW: p.picW, picH: p.picH, mini: p.mini, dur: p.dur, edge: 0,
             pic: p.file && p.file.local.is_downloading_completed ? p.file.local.path : ""
         }
     }
@@ -229,9 +300,68 @@ Page {
         return !other || other.senderKey !== senderKey || Math.abs(other.date - date) > 600
     }
 
-    function read(msgs) {
-        if (msgs.length)
-            store.send({ "@type": "viewMessages", chat_id: chatId, message_ids: msgs.map((m) => m.id), force_read: true })
+    // what is on the screen is read: the newest message in sight and all before it (as Telegram counts)
+    function seen() {
+        if (!ready || !messages.count)
+            return
+        let i = list.indexAt(list.width / 2, list.contentY + list.height - input.height - 4)
+        if (i < 0)
+            i = list.atYBeginning ? 0 : -1
+        away = gap || i > 2
+        if (i < 0 || messages.get(i).msgId <= readTo)
+            return
+        const ids = []
+        const newest = messages.get(i).msgId
+        for (let k = i; k < messages.count && ids.length < 100; k++) {
+            const r = messages.get(k)
+            if (r.msgId <= readTo)
+                break
+            if (!r.out)
+                ids.push(r.msgId)
+        }
+        readTo = newest
+        if (ids.length)
+            store.send({ "@type": "viewMessages", chat_id: chatId, message_ids: ids, force_read: true })
+    }
+    Timer { id: seenLater; interval: 250; onTriggered: page.seen() }
+    Timer { id: unflash; interval: 1400; onTriggered: page.flashId = 0 }
+
+    // newer messages while the bottom is 15 away, when it was opened at the unread ones
+    function nearBottom() {
+        if (!gap || newering || !messages.count)
+            return
+        const bottom = list.indexAt(list.width / 2, list.contentY + list.height - 4)
+        if (bottom < 0 ? list.atYBeginning : bottom <= 15)
+            newer()
+    }
+
+    function newer() {
+        newering = true
+        const from = messages.get(0).msgId
+        store.send({ "@type": "getChatHistory", chat_id: chatId, from_message_id: from, offset: -40, limit: 41,
+                     only_local: false }, (r) => {
+            if (!page)
+                return
+            page.newering = false
+            if (r["@type"] === "error") {
+                console.warn("nullgram: getChatHistory (newer)", page.chatId, from, r.code, r.message)
+                return
+            }
+            const got = (r.messages || []).filter((m) => m.id > from)      // newest first
+            if (!got.length) {
+                page.gap = false            // nothing newer: these are the newest
+                return
+            }
+            for (const m of got)
+                page.remember(m)
+            for (let k = got.length - 1; k >= 0; k--)
+                messages.insert(0, page.row(got[k]))
+            const last = page.chat && page.chat.last_message
+            if (last && got[0].id >= last.id)
+                page.gap = false
+            Qt.callLater(page.nearBottom)
+            seenLater.restart()
+        })
     }
 
     function older() {
@@ -344,7 +474,7 @@ Page {
     Connections {
         target: store
         function onMessage(m) {
-            if (m.chat_id !== page.chatId)
+            if (m.chat_id !== page.chatId || page.gap)      // (in a gap it comes with the newer ones)
                 return
             for (let i = 0; i < Math.min(messages.count, 20); i++)
                 if (messages.get(i).msgId === m.id)
@@ -368,8 +498,11 @@ Page {
                         it.flyFrom(from)
                 }
             }
-            if (!m.is_outgoing)
-                page.read([m])
+            seenLater.restart()
+        }
+        function onChatChanged(chatId) {
+            if (chatId === page.chatId)
+                page.unread = page.chat.unread_count
         }
         function onMessageChanged(chatId, oldId, m) {
             if (chatId !== page.chatId)
@@ -442,7 +575,11 @@ Page {
             flickDeceleration: 2200
             header: Item { width: 1; height: input.height + 10 }
             footer: Item { width: 1; height: bar.height + 8 }
-            onContentYChanged: page.nearTop()                // (index 0 is the newest, at the bottom)
+            onContentYChanged: {                             // (index 0 is the newest, at the bottom)
+                page.nearTop()
+                page.nearBottom()
+                seenLater.restart()
+            }
             // whether it stands at the newest: then it stays there when the field grows or shrinks
             property bool down: true
             onMovementEnded: down = atYBeginning
@@ -471,6 +608,7 @@ Page {
                 required property string mini
                 required property string pic
                 required property int dur
+                required property int edge          // its older neighbour came: first and newDay again
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -486,12 +624,13 @@ Page {
                 Component.onCompleted: if (media && !pic) page.loadPic(msgId)
                 // a run: one sender's messages within 10 minutes of each other. Its first (the
                 // top) has the name and more space over it, its last (the bottom) the tail.
-                readonly property bool first: page.apart(messages.get(index + 1), senderKey, date)
+                readonly property bool first: edge, page.apart(messages.get(index + 1), senderKey, date)
                 readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
                 readonly property real most: width * 0.78
                 // the first message of a day has the day over it
-                readonly property bool newDay: page.otherDay(messages.get(index + 1), date)
-                readonly property real above: (newDay ? 38 : 0) + (first ? 8 : 2)
+                readonly property bool newDay: edge, page.otherDay(messages.get(index + 1), date)
+                readonly property bool unreadBar: msgId === page.firstUnread
+                readonly property real above: (newDay ? 38 : 0) + (unreadBar ? 36 : 0) + (first ? 8 : 2)
                 width: list.width
                 height: bubble.height + above
 
@@ -507,6 +646,25 @@ Page {
                         text: item.newDay ? page.dayName(item.date) : ""
                         color: "white"
                         font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                    }
+                }
+                Rectangle {          // the message found, lit up a moment (as Telegram-iOS does)
+                    y: item.above - 2
+                    width: parent.width; height: parent.height - y + 2
+                    color: Theme.accent
+                    opacity: item.msgId === page.flashId ? 0.18 : 0
+                    Behavior on opacity { NumberAnimation { duration: 500 } }
+                }
+                Rectangle {          // Telegram-iOS's unread bar, over the first unread message
+                    visible: item.unreadBar
+                    y: (item.newDay ? 38 : 0) + 6
+                    width: parent.width; height: 28
+                    color: Theme.bar
+                    Text {
+                        anchors.centerIn: parent
+                        text: "O'qilmagan xabarlar"
+                        color: Theme.grey
+                        font.family: Theme.font; font.pixelSize: 13
                     }
                 }
 
@@ -700,6 +858,49 @@ Page {
             }
         }
 
+        Rectangle {          // ↓: to the newest (loaded afresh when it was opened at the unread ones)
+            id: toNewest
+            z: 2
+            anchors.right: parent.right; anchors.rightMargin: 10
+            y: parent.height - input.height - height - 12
+            width: 40; height: 40; radius: 20
+            color: Theme.menu
+            border.color: Theme.fieldBorder; border.width: 1
+            visible: page.ready && page.away
+            Text {
+                anchors.centerIn: parent
+                text: "⌄"
+                color: Theme.grey
+                font.family: Theme.font; font.pixelSize: 26
+                anchors.verticalCenterOffset: -5
+            }
+            Rectangle {      // how many are unread
+                visible: page.unread > 0
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: -9
+                width: Math.max(20, unreadText.implicitWidth + 10); height: 20; radius: 10
+                color: Theme.badge
+                Text {
+                    id: unreadText
+                    anchors.centerIn: parent
+                    text: store.count(page.unread)
+                    color: "white"
+                    font.family: Theme.font; font.pixelSize: 12; font.weight: Font.DemiBold
+                }
+            }
+            MouseArea {
+                anchors.fill: parent; anchors.margins: -6
+                onClicked: {
+                    if (page.gap) {
+                        page.fresh()
+                        return
+                    }
+                    list.down = true
+                    list.positionViewAtBeginning()
+                }
+            }
+        }
+
         Rectangle {          // the header: back, the name and what it is
             id: bar
             z: 3
@@ -829,6 +1030,8 @@ Page {
                             field.text = ""
                             return
                         }
+                        if (page.gap)           // what is sent goes under the newest: go there first
+                            page.fresh()
                         const at = field.mapToItem(page, 0, 0)
                         page.flying = { text: t, x: at.x, y: at.y }
                         store.sendText(page.chatId, t, page.replying ? page.replying.id : 0)

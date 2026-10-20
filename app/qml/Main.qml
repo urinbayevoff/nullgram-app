@@ -5,6 +5,7 @@
 // laid out before it moves (it says so with `ready`), so the motion has nothing
 // to wait for. The motion is Animators: they run on the render thread.
 import QtQuick
+import QtCore
 
 Rectangle {
     id: root
@@ -25,7 +26,12 @@ Rectangle {
     property bool moving: motion.running
 
     Component { id: loginPage; LoginPage {} }
-    Component { id: chatsPage; ChatListPage {} }
+    Component { id: chatsPage; HomePage {} }
+
+    // the night theme, kept (~/.config/OmonullOS/Nullgram.conf)
+    Settings { id: prefs; property bool dark: false }
+    Component.onCompleted: Theme.dark = prefs.dark
+    Connections { target: Theme; function onDarkChanged() { prefs.dark = Theme.dark } }
 
     // the first page: the sign-in until Telegram says we are in, then the chats
     property string base: store.auth === "Ready" ? "chats" : store.auth === "" ? "" : "login"
