@@ -7,7 +7,10 @@ to replace when the client moves from Telethon to TDLib: the signals and
 the dicts they carry stay the same.
 
 A chat:    {"id", "name", "text", "date", "unread", "out", "kind", "pinned", "muted", "photo"}
-A message: {"id", "chat", "text", "date", "out", "sender", "sender_id", "media", "views", "read"}
+A message: {"id", "chat", "text", "date", "out", "sender", "sender_id", "media", "views", "read"[, "pic"]}
+A picture: {"kind": "photo" | "video" | "gif" | "round" | "sticker", "w", "h", "dur", "stripped": a tiny
+           blurred JPEG Telegram sends with the message (or None), "path" once it is on disk}; a
+           picture not yet on disk comes by the `pic` signal (MEDIA/<chat id>_<message id>.pic).
 A contact: {"id", "name", "phone", "photo", "kind": "user"}
 
 "photo" is the profile photo's id (0: none); its small picture comes by the
@@ -25,6 +28,7 @@ from PySide6.QtCore import QObject, Signal
 DATA = os.path.expanduser("~/.local/share/ztos/data/uz.omonullos.tepegram")
 VENDOR = os.path.join(DATA, "vendor")
 AVATARS = os.path.join(DATA, "avatars")
+MEDIA = os.path.join(DATA, "media")
 
 # the phone keeps the libraries compiled next to the app (tools/deploy.sh)
 if os.path.isdir(VENDOR) and VENDOR not in sys.path:
@@ -39,7 +43,7 @@ from telethon.errors import (FloodWaitError, PhoneCodeExpiredError, PhoneCodeInv
 MEDIA_UZ = {
 	"photo": "Rasm", "video": "Video", "voice": "Ovozli xabar", "audio": "Musiqa", "sticker": "Stiker",
 	"gif": "GIF", "document": "Fayl", "contact": "Kontakt", "geo": "Joylashuv", "poll": "So'rovnoma",
-	"video_note": "Video xabar", "web": "Havola",
+	"video_note": "Video xabar", "web": "Havola", "story": "Hikoya", "dice": "O'yin", "other": "Bu turdagi xabar hali yo'q",
 }
 
 
@@ -58,7 +62,9 @@ def _media(m) -> str:
 	if m.poll: return "poll"
 	if m.web_preview: return ""
 	if m.document: return "document"
-	return ""
+	if isinstance(m.media, types.MessageMediaStory): return "story"
+	if isinstance(m.media, types.MessageMediaDice): return "dice"
+	return "other"
 
 
 def _stamp(d) -> float:
@@ -70,6 +76,43 @@ def message_dict(m, sender_name: str = "", read_out: int = 0) -> dict:
 	return {"id": m.id, "chat": m.chat_id, "text": m.message or "", "date": _stamp(m.date), "out": bool(m.out),
 	        "sender": sender_name, "sender_id": m.sender_id or 0, "media": media, "views": m.views or 0,
 	        "read": bool(m.out and m.id <= read_out)}
+
+
+def _sizes(sizes) -> list:
+	return [s for s in sizes or () if isinstance(s, (types.PhotoSize, types.PhotoSizeProgressive))]
+
+
+def picture(m):
+	"""What a message shows as a picture (see the module's doc), or None."""
+	if isinstance(m.photo, types.Photo):
+		sizes = _sizes(m.photo.sizes)
+		if not sizes:
+			return None
+		big = max(sizes, key=lambda s: s.w)
+		w, h, dur, thumbs, kind = big.w, big.h, 0, m.photo.sizes, "photo"
+	else:
+		doc = m.document
+		kind = None if doc is None else "sticker" if m.sticker else "round" if m.video_note else \
+			"gif" if m.gif else "video" if m.video else None
+		if kind is None:
+			return None
+		w = h = dur = 0
+		for a in doc.attributes:
+			if isinstance(a, (types.DocumentAttributeImageSize, types.DocumentAttributeVideo)):
+				w, h, dur = a.w, a.h, int(getattr(a, "duration", 0) or 0)
+		thumbs = doc.thumbs or []
+		if not (kind == "sticker" and doc.mime_type == "image/webp") and not _sizes(thumbs):
+			return None		# nothing to show (an animated sticker with only its outline)
+		if not w or not h:
+			t = max(_sizes(thumbs), key=lambda s: s.w, default=None)
+			w, h = (t.w, t.h) if t else (512, 512)
+	stripped = next((t for t in thumbs or () if isinstance(t, types.PhotoStrippedSize)), None)
+	return {"kind": kind, "w": w, "h": h, "dur": dur,
+	        "stripped": utils.stripped_photo_to_jpg(stripped.bytes) if stripped else None}
+
+
+def pic_path(chat_id: int, msg_id: int, full: bool = False) -> str:
+	return os.path.join(MEDIA, f"{chat_id}_{msg_id}{'_full' if full else ''}.pic")
 
 
 def photo_id(entity) -> int:
@@ -139,6 +182,8 @@ class Backend(QObject):
 	sent = Signal(object, object)	# the local id it was shown with, the message as sent
 	info = Signal(object, object)	# chat id, what its header says under the name ("onlayn", "12 a'zo")
 	typing = Signal(object, object)	# chat id, who is writing ("" in a private chat; None: stopped)
+	pic = Signal(object, object, object)	# chat id, message id, its picture's path (as the bubble shows it)
+	full = Signal(object, object, object)	# chat id, message id, the photo at its largest
 	error = Signal(str)
 
 	def __init__(self):
@@ -152,6 +197,9 @@ class Backend(QObject):
 		self._read_in, self._read_out = {}, {}	# id -> the newest message read, theirs and ours
 		self._avatar_task = None
 		self._avatar_queue = []
+		self._pic_msgs = {}		# (chat id, message id) -> the message, to download its picture from
+		self._pic_queue = []
+		self._pic_task = None
 		threading.Thread(target=self._run, name="tepegram-tg", daemon=True).start()
 
 	# ---- plumbing ---------------------------------------------------------
@@ -171,6 +219,7 @@ class Backend(QObject):
 		except ConnectionError:
 			self.state.emit("offline")
 		except Exception as e:  # noqa: BLE001 (the UI shows it, the loop lives on)
+			print(f"tepegram: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 			self.error.emit(f"{type(e).__name__}: {e}")
 
 	# ---- what the UI calls -----------------------------------------------
@@ -193,8 +242,10 @@ class Backend(QObject):
 	def load_chats(self):
 		self._go(self._load_chats())
 
-	def load_history(self, chat_id: int, limit: int = 40):
-		self._go(self._load_history(chat_id, limit))
+	def load_history(self, chat_id: int, limit: int = 40, ahead: bool = False):
+		"""The chat's messages (`history`). `ahead`: before it is opened, so that it
+		opens at once -- its pictures not downloaded until it is."""
+		self._go(self._load_history(chat_id, limit, ahead))
 
 	def load_older(self, chat_id: int, before_id: int, limit: int = 30):
 		self._go(self._load_older(chat_id, before_id, limit))
@@ -207,6 +258,9 @@ class Backend(QObject):
 
 	def send(self, chat_id: int, text: str, local_id: int):
 		self._go(self._send(chat_id, text, local_id))
+
+	def fetch_full(self, chat_id: int, msg_id: int):
+		self._go(self._fetch_full(chat_id, msg_id))
 
 	def read(self, chat_id: int):
 		self._go(self._read(chat_id))
@@ -222,7 +276,7 @@ class Backend(QObject):
 			api = json.load(f)
 		self.client = TelegramClient(os.path.join(DATA, "tepegram"), int(api["id"]), api["hash"],
 		                             device_model="Galaxy S10 5G", system_version="OmonullOS",
-		                             app_version="Tepegram 0.4", lang_code="uz", system_lang_code="uz")
+		                             app_version="Tepegram 0.5", lang_code="uz", system_lang_code="uz")
 		self.client.add_event_handler(self._on_new, events.NewMessage)
 		self.client.add_event_handler(self._on_read, events.MessageRead(inbox=False))
 		self.client.add_event_handler(self._on_user, events.UserUpdate)
@@ -341,7 +395,7 @@ class Backend(QObject):
 				os.replace(got, path)
 				self.avatar.emit(chat_id, path)
 
-	async def _messages(self, chat_id: int, msgs) -> list:
+	async def _messages(self, chat_id: int, msgs, ahead: bool = False) -> list:
 		"""Oldest first, as dicts: senders' names in groups."""
 		group = self._chats.get(chat_id, {}).get("kind") == "group"
 		read_out = self._read_out.get(chat_id, 0)
@@ -355,9 +409,83 @@ class Backend(QObject):
 			out.append(message_dict(m, name, read_out))
 		if people:
 			self._fetch_avatars(list(people.values()))
+		self._pictures(chat_id, msgs, out, download=not ahead)
 		return out
 
-	async def _load_history(self, chat_id: int, limit: int):
+	# ---- pictures in messages ----------------------------------------------
+
+	def _pictures(self, chat_id: int, msgs, dicts: list, download: bool = True):
+		"""Each message's picture into its dict; those not on disk yet to download, newest first."""
+		os.makedirs(MEDIA, exist_ok=True)
+		by_id = {m.id: m for m in msgs}
+		wanted = []
+		for d in reversed(dicts):
+			m = by_id.get(d["id"])
+			info = picture(m) if m is not None else None
+			if info is None:
+				continue
+			d["pic"] = info
+			path = pic_path(chat_id, d["id"])
+			if os.path.exists(path):
+				info["path"] = path
+			elif download:
+				self._pic_msgs[(chat_id, d["id"])] = m
+				wanted.append((chat_id, d["id"]))
+		while len(self._pic_msgs) > 400:
+			self._pic_msgs.pop(next(iter(self._pic_msgs)))
+		self._pic_queue = wanted + [w for w in self._pic_queue if w not in wanted]
+		if wanted and (self._pic_task is None or self._pic_task.done()):
+			self._pic_task = asyncio.ensure_future(self._download_pics())
+
+	@staticmethod
+	def _shown_size(m):
+		"""The size a bubble shows: a photo's about 800 wide (sharp at 4x on 251 points
+		is 1000, but 800 is a quarter of the bytes), a document's largest thumbnail,
+		a webp sticker itself. (By its type's letter: Telethon takes no
+		PhotoSizeProgressive object.)"""
+		if isinstance(m.photo, types.Photo):
+			sizes = sorted(_sizes(m.photo.sizes), key=lambda s: s.w)
+			return next((s for s in sizes if s.w >= 800), sizes[-1]).type
+		if m.sticker and m.document.mime_type == "image/webp":
+			return None
+		return max(_sizes(m.document.thumbs), key=lambda s: s.w).type
+
+	async def _download_pics(self):
+		# not while the chat turns in: this thread's Python would take frames from it
+		await asyncio.sleep(0.9)
+		while self._pic_queue:
+			key = self._pic_queue.pop(0)
+			m = self._pic_msgs.pop(key, None)
+			if m is None:
+				continue
+			path = pic_path(*key)
+			try:
+				got = await self.client.download_media(m, file=path + ".part", thumb=self._shown_size(m))
+			except FloodWaitError as e:
+				await asyncio.sleep(e.seconds + 1)
+				self._pic_msgs[key] = m
+				self._pic_queue.insert(0, key)
+				continue
+			except Exception:  # noqa: BLE001 (the blurred one stays)
+				continue
+			if got:
+				os.replace(got, path)
+				self.pic.emit(key[0], key[1], path)
+
+	async def _fetch_full(self, chat_id: int, msg_id: int):
+		path = pic_path(chat_id, msg_id, full=True)
+		if not os.path.exists(path):
+			m = await self.client.get_messages(chat_id, ids=msg_id)
+			if m is None or not isinstance(m.photo, types.Photo):
+				return
+			got = await self.client.download_media(m, file=path + ".part",
+			                                       thumb=max(_sizes(m.photo.sizes), key=lambda s: s.w).type)
+			if not got:
+				return
+			os.replace(got, path)
+		self.full.emit(chat_id, msg_id, path)
+
+	async def _load_history(self, chat_id: int, limit: int, ahead: bool = False):
 		"""The newest messages; or, with some unread, a few read ones and the
 		unread after them, so the chat opens where it was left."""
 		await self._load_info(chat_id)
@@ -366,12 +494,12 @@ class Backend(QObject):
 		if unread and read_in:
 			before = await self.client.get_messages(chat_id, limit=10, max_id=read_in + 1)
 			after = await self.client.get_messages(chat_id, limit=limit, min_id=read_in, reverse=True)
-			msgs = await self._messages(chat_id, list(before) + list(after))
+			msgs = await self._messages(chat_id, list(before) + list(after), ahead)
 			first = next((m["id"] for m in msgs if m["id"] > read_in and not m["out"]), 0)
 			self.history.emit(chat_id, msgs, {"first_unread": first, "newer": len(after) >= limit})
 			return
 		msgs = await self.client.get_messages(chat_id, limit=limit)
-		self.history.emit(chat_id, await self._messages(chat_id, msgs), {"first_unread": 0, "newer": False})
+		self.history.emit(chat_id, await self._messages(chat_id, msgs, ahead), {"first_unread": 0, "newer": False})
 
 	async def _load_info(self, chat_id: int):
 		c = self._chats.get(chat_id, {})
@@ -460,6 +588,7 @@ class Backend(QObject):
 				self._entities[m.sender_id] = sender
 				self._fetch_avatars([(m.sender_id, photo_id(sender))])
 		d = message_dict(m, name)
+		self._pictures(event.chat_id, [m], [d])
 		c.update(text=preview(d["text"], d["media"]), date=d["date"], out=d["out"])
 		if not m.out:
 			if not c.get("unread"):

@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QFontMetricsF, QImage, QLinearGradient, QPaint
 	QPixmap, QRegion
 from PySide6.QtWidgets import QWidget
 
+import views
 import ztos
 from ztos import FONT_REGULAR, FONT_SEMIBOLD, _font
 
@@ -150,6 +151,7 @@ class GlassBar(QWidget):
 		self._gpu_key = None
 		self._under_key = None
 		self._still_key = None
+		self._plain_key = self._lit_key = None
 		self._bands = None
 		self._gl_at = None
 		for part in self.parts:
@@ -209,7 +211,7 @@ class GlassBar(QWidget):
 		box.setParent(self)
 		f = box.field
 		f.setStyleSheet("QLineEdit, QLineEdit:focus { background: transparent; color: white; border: none;"
-		                " padding: 0px 10px; font-size: 17px; selection-background-color: %s; }" % ztos.accent().name())
+		                " padding: 0px 10px; font-size: 17px; selection-background-color: %s; }" % views.accent().name())
 		pal = f.palette()
 		pal.setColor(QPalette.PlaceholderText, QColor(255, 255, 255, 110))
 		f.setPalette(pal)
@@ -219,6 +221,19 @@ class GlassBar(QWidget):
 	def _restyle(self):
 		self._over = None
 		self.update()
+
+	def release(self, layer):
+		"""Its pictures off the GPU (its page is gone)."""
+		for name in ("over", "under", "still", "plain", "lit"):
+			layer.drop((id(self), name))
+
+	def retheme(self):
+		"""A new theme: its accent, the background round the shapes."""
+		for part in self.parts:
+			if part[0] == "field":
+				self._own_field(part[1])
+		self._cache = None
+		self._restyle()
 
 	def restyle(self):
 		"""What a title or an avatar shows has changed (a title's width with it)."""
@@ -311,10 +326,17 @@ class GlassBar(QWidget):
 				y += h
 
 	# the shapes' own look
-	def _paint_over(self, p: QPainter):
+	def _paint_over(self, p: QPainter, mode: str = "full"):
+		"""The shapes' tint, rims and what is in them. mode "plain": no lens and
+		every tab white (under a lens that slides); "lit": only the tabs, all
+		in the accent (seen through that lens)."""
 		p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
 		for i, rect, r in self.shapes:
 			part = self.parts[i]
+			if mode == "lit":
+				if part[0] == "tabs":
+					self._paint_tabs(p, i, rect, mode)
+				continue
 			path = QPainterPath()
 			path.addRoundedRect(rect, r, r)
 			p.fillPath(path, TINT)
@@ -326,14 +348,14 @@ class GlassBar(QWidget):
 			p.setPen(QPen(g, 1.0))
 			p.setBrush(Qt.NoBrush)
 			p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r - 0.5, r - 0.5)
-			pressed = self.pressed is not None and self.pressed[0] == i
+			pressed = mode == "full" and self.pressed is not None and self.pressed[0] == i
 			if part[0] == "tabs":
-				self._paint_tabs(p, i, rect)
+				self._paint_tabs(p, i, rect, mode)
 			elif part[0] == "circle":
 				lit = len(part) > 3 and part[3]()
 				if lit or pressed:
 					p.setPen(Qt.NoPen)
-					p.setBrush(ztos.accent().lighter(130) if lit and pressed else ztos.accent() if lit
+					p.setBrush(views.accent().lighter(130) if lit and pressed else views.accent() if lit
 					           else LENS_PRESSED)
 					p.drawEllipse(rect.adjusted(3, 3, -3, -3))
 				icon(p, part[1], rect.center().x(), rect.center().y(), self.h * 0.42, QColor("white"))
@@ -356,29 +378,49 @@ class GlassBar(QWidget):
 			p.setFont(f2)
 			halo_text(p, QRectF(inner.left(), y + m1.height() - 2, inner.width(), m2.height()),
 			          Qt.AlignHCenter | Qt.AlignVCenter, m2.elidedText(under, Qt.ElideRight, inner.width()),
-			          ztos.accent().lighter(125) if lit else QColor(255, 255, 255, 175))
+			          views.accent().lighter(125) if lit else QColor(255, 255, 255, 175))
 
 	def _tab_rects(self, rect: QRectF, n: int) -> list:
 		inner = rect.adjusted(self.INSET, self.INSET, -self.INSET, -self.INSET)
 		w = inner.width() / n
 		return [QRectF(inner.left() + k * w, inner.top(), w, inner.height()) for k in range(n)]
 
-	def _paint_tabs(self, p: QPainter, i: int, rect: QRectF):
+	def _paint_tabs(self, p: QPainter, i: int, rect: QRectF, mode: str = "full"):
 		tabs = self.parts[i][1]
 		rects = self._tab_rects(rect, len(tabs))
-		pressed = self.pressed[1] if self.pressed is not None and self.pressed[0] == i else -1
+		pressed = self.pressed[1] if mode == "full" and self.pressed is not None and self.pressed[0] == i else -1
 		for k, (name, word, _) in enumerate(tabs):
 			t = rects[k]
-			on = k == self.selected
-			if on or k == pressed:
+			th = t.height()
+			on = k == self.selected if mode == "full" else mode == "lit"
+			if mode == "full" and (on or k == pressed):
 				p.setPen(Qt.NoPen)
 				p.setBrush(LENS_PRESSED if k == pressed else LENS)
-				p.drawRoundedRect(t, t.height() / 2, t.height() / 2)
-			color = ztos.accent() if on else QColor("white")
-			icon(p, name, t.center().x(), t.top() + t.height() * 0.40, t.height() * 0.46, color, on)
+				p.drawRoundedRect(t, th / 2, th / 2)
+			color = views.accent() if on else QColor("white")
+			icon(p, name, t.center().x(), t.top() + th * 0.38, th * 0.44, color, on)
 			p.setPen(color)
-			p.setFont(_font(FONT_SEMIBOLD, 10.5))
-			p.drawText(QRectF(t.left(), t.bottom() - 19, t.width(), 14), Qt.AlignHCenter | Qt.AlignVCenter, word)
+			p.setFont(_font(FONT_SEMIBOLD, max(9.5, th * 0.19)))
+			p.drawText(QRectF(t.left(), t.bottom() - th * 0.33, t.width(), th * 0.25),
+			           Qt.AlignHCenter | Qt.AlignVCenter, word)
+
+	def _layer_image(self, mode: str) -> QImage:
+		"""The plain or the lit look (see _paint_over), kept for the bar's size and theme."""
+		ratio = self.devicePixelRatioF()
+		key = (mode, self.size(), ratio, views.accent().rgb())
+		cache = self.__dict__.setdefault("_layers", {})
+		if key not in cache:
+			if len(cache) > 4:
+				cache.clear()
+			img = QImage(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)),
+			             QImage.Format_RGBA8888_Premultiplied)
+			img.setDevicePixelRatio(ratio)
+			img.fill(Qt.transparent)
+			p = QPainter(img)
+			self._paint_over(p, mode)
+			p.end()
+			cache[key] = img
+		return cache[key]
 
 	def _overlay(self) -> QImage:
 		"""The shapes' tint, rims and icons at the screen's resolution, transparent around them."""
@@ -407,6 +449,16 @@ class GlassBar(QWidget):
 
 	# still: the widget
 	def paintEvent(self, event):
+		import time
+		t0 = time.perf_counter()
+		try:
+			self._paint_event()
+		finally:
+			if ztos._profiling:
+				n, ms = views.PAINTS.get("GlassBar", (0, 0.0))
+				views.PAINTS["GlassBar"] = (n + 1, ms + (time.perf_counter() - t0) * 1000)
+
+	def _paint_event(self):
 		page = self.page_of()
 		scroll = getattr(page, "_scroll", 0.0)
 		ratio = self.devicePixelRatioF()
@@ -419,11 +471,11 @@ class GlassBar(QWidget):
 		p.drawPixmap(0, 0, self._cache)
 		p.end()
 
-	def _compose(self, page, scroll: float, ratio: float, opaque: bool, children: bool = False):
+	def _compose(self, page, scroll: float, ratio: float, opaque: bool, children: bool = False, over=None):
 		if opaque:
 			img = QPixmap(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)))
 			img.setDevicePixelRatio(ratio)
-			img.fill(QColor("black"))
+			img.fill(ztos.background())
 		else:
 			img = QImage(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)),
 			             QImage.Format_RGBA8888_Premultiplied)
@@ -451,10 +503,10 @@ class GlassBar(QWidget):
 				if wall:
 					self._paint_wall(p, page)
 				else:
-					p.fillRect(self.rect(), QColor("black"))
+					p.fillRect(self.rect(), ztos.background())
 				p.restore()
 			self._paint_strips(p, page, scroll)
-		p.drawImage(QPointF(0, 0), self._overlay())
+		p.drawImage(QPointF(0, 0), over if over is not None else self._overlay())
 		if children:
 			self._children(p)
 		p.end()
@@ -541,22 +593,58 @@ class GlassBar(QWidget):
 			quads.append(Quad.rect((id(self), "over"), ztos._WHOLE, ox, oy, float(self.width()), float(self.height())))
 		return quads
 
-	def still_quads(self, layer) -> list:
+	def still_quads(self, layer, lens=None) -> list:
 		"""The bar as one picture, for a motion that is not of the list under
-		it (a pivot's tabs sliding): its glass stays as it was."""
+		it (a pivot's tabs sliding): its glass stays as it was. With `lens` (a
+		tab's index, fractional between two) the lens slides with the pages:
+		the bar is drawn without it, then the lens, then the tabs in the accent
+		seen only through it -- three quads a frame, nothing drawn."""
 		from ztos._gl import Quad
 		page = self.page_of()
 		scroll = getattr(page, "_scroll", 0.0)
 		ratio = self.devicePixelRatioF()
-		self._overlay()
-		key = (id(page), round(scroll * ratio), getattr(page, "glass_gen", 0), self._over_gen,
-		       tuple(p[1].text() for p in self.parts if p[0] == "field"))
-		if self._still_key != key or not layer.has((id(self), "still")):
-			layer.upload((id(self), "still"), self._compose(page, scroll, ratio, opaque=False, children=True))
-			self._still_key = key
 		at = self.mapTo(self.window(), QPoint(0, 0))
-		return [Quad.rect((id(self), "still"), ztos._WHOLE, float(at.x()), float(at.y()),
-		                  float(self.width()), float(self.height()))]
+		ox, oy, w, h = float(at.x()), float(at.y()), float(self.width()), float(self.height())
+		if lens is None:
+			self._overlay()
+			key = (id(page), round(scroll * ratio), getattr(page, "glass_gen", 0), self._over_gen,
+			       tuple(p[1].text() for p in self.parts if p[0] == "field"))
+			if self._still_key != key or not layer.has((id(self), "still")):
+				layer.upload((id(self), "still"), self._compose(page, scroll, ratio, opaque=False, children=True))
+				self._still_key = key
+			return [Quad.rect((id(self), "still"), ztos._WHOLE, ox, oy, w, h)]
+		tabs = next(((i, rect) for i, rect, _ in self.shapes if self.parts[i][0] == "tabs"), None)
+		if tabs is None:
+			return self.still_quads(layer)
+		plain = self._layer_image("plain")
+		key = (id(page), round(scroll * ratio), getattr(page, "glass_gen", 0), plain.cacheKey())
+		if self._plain_key != key or not layer.has((id(self), "plain")):
+			layer.upload((id(self), "plain"), self._compose(page, scroll, ratio, opaque=False, over=plain))
+			self._plain_key = key
+		lit = self._layer_image("lit")
+		if self._lit_key != lit.cacheKey() or not layer.has((id(self), "lit")):
+			layer.upload((id(self), "lit"), lit)
+			self._lit_key = lit.cacheKey()
+		rects = self._tab_rects(tabs[1], len(self.parts[tabs[0]][1]))
+		t = QRectF(rects[0])
+		t.moveLeft(rects[0].left() + lens * t.width())
+		if not layer.has((id(self), "lens", t.width(), t.height())):
+			img = QImage(max(1, round(t.width() * ratio)), max(1, round(t.height() * ratio)),
+			             QImage.Format_RGBA8888_Premultiplied)
+			img.setDevicePixelRatio(ratio)
+			img.fill(Qt.transparent)
+			p = QPainter(img)
+			p.setRenderHint(QPainter.Antialiasing, True)
+			p.setPen(Qt.NoPen)
+			p.setBrush(LENS)
+			p.drawRoundedRect(QRectF(0, 0, t.width(), t.height()), t.height() / 2, t.height() / 2)
+			p.end()
+			layer.upload((id(self), "lens", t.width(), t.height()), img)
+		return [Quad.rect((id(self), "plain"), ztos._WHOLE, ox, oy, w, h),
+		        Quad.rect((id(self), "lens", t.width(), t.height()), ztos._WHOLE, ox + t.x(), oy + t.y(),
+		                  t.width(), t.height()),
+		        Quad.rect((id(self), "lit"), QRectF(t.x() / w, t.y() / h, t.width() / w, t.height() / h),
+		                  ox + t.x(), oy + t.y(), t.width(), t.height())]
 
 	# touch
 	def _hit(self, pos: QPointF):

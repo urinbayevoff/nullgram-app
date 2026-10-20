@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QRegion)
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
@@ -27,20 +27,26 @@ PLACEHOLDERS = [0x0050ef, 0x00bcd4, 0x00aa08, 0xf0a30a, 0xf472d0, 0xaa00ff, 0xfa
 # chat themes: the first is Telegram for WP's dark one (its MessageControl.xaml: square
 # boxes on black); the others are as other Telegrams have them, a wallpaper of four
 # colours blended ("freeform", fixed to the screen, the messages float over it) and
-# round bubbles. theirs, ours, a channel's card: (fill, text, small text)
+# round bubbles. The whole app takes a theme's background (behind lists, pages, page
+# turns: ztos.set_background) and accent. theirs, ours, a channel's card: (fill, text, small text)
 THEMES = [
-	{"id": "qora", "name": "qora", "wall": None, "round": 0,
+	{"id": "qora", "name": "qora", "wall": None, "round": 0, "bg": "#000000", "accent": None,
 	 "theirs": ("#ffffff", "#000000", "#93989d"), "ours": ("#2b2b2b", "#ffffff", "#a0a0a0"),
 	 "card": ("#1f1f1f", "#ffffff", "#a0a0a0")},
 	{"id": "tun", "name": "tun", "wall": ("#0e1621", "#13202e", "#0c141d", "#112030"), "round": 12,
+	 "bg": "#101a24", "accent": "#5288c1",
 	 "theirs": ("#182533", "#ffffff", "#6d7f8f"), "ours": ("#2b5278", "#ffffff", "#7da8d3")},
 	{"id": "binafsha", "name": "binafsha", "wall": ("#2a1650", "#47226e", "#1c1440", "#3a1d63"), "round": 12,
+	 "bg": "#150f26", "accent": "#9d6cf0",
 	 "theirs": ("#2a2142", "#ffffff", "#8e84a8"), "ours": ("#6b3fb8", "#ffffff", "#c9b3ef")},
 	{"id": "okean", "name": "okean", "wall": ("#0b3a52", "#0f5e6e", "#08304a", "#136b78"), "round": 12,
+	 "bg": "#08202c", "accent": "#2fb4c9",
 	 "theirs": ("#17323f", "#ffffff", "#7b97a3"), "ours": ("#1d7584", "#ffffff", "#a5dbe3")},
 	{"id": "shaftoli", "name": "shaftoli", "wall": ("#fec496", "#dd6cb9", "#962fbf", "#4f5bd5"), "round": 12,
+	 "bg": "#1f1026", "accent": "#e86cb9",
 	 "theirs": ("#ffffff", "#000000", "#a1aab3"), "ours": ("#ffe6f4", "#000000", "#c27aa5")},
 	{"id": "yashil", "name": "kunduzgi yashil", "wall": ("#dbddbb", "#6ba587", "#d5d88d", "#88b884"), "round": 12,
+	 "bg": "#101c15", "accent": "#5fae6f",
 	 "theirs": ("#ffffff", "#000000", "#a1aab3"), "ours": ("#effedd", "#000000", "#5fae6f")},
 ]
 THEME = THEMES[0]
@@ -54,6 +60,11 @@ def set_theme(theme_id: str):
 	THEME = next((t for t in THEMES if t["id"] == theme_id), THEMES[0])
 
 
+def accent() -> QColor:
+	"""The theme's accent (the phone's own in the black one)."""
+	return QColor(THEME["accent"]) if THEME.get("accent") else ztos.accent()
+
+
 def colors(which: str, theme: dict = None) -> tuple:
 	"""A theme's (fill, text, small text) for "theirs", "ours" or "card" as QColors."""
 	t = theme or THEME
@@ -65,7 +76,7 @@ _WALL_AT = ((0.80, 0.10), (0.35, 0.25), (0.20, 0.90), (0.65, 0.75))
 _walls = {}
 
 
-def wallpaper(wall: tuple, w: int = 60, h: int = 126) -> QImage:
+def wallpaper(wall: tuple, w: int = 30, h: int = 63) -> QImage:
 	"""The four colours blended by nearness, small (it is smooth: drawn large it stays smooth)."""
 	key = (wall, w, h)
 	if key not in _walls:
@@ -83,6 +94,14 @@ def wallpaper(wall: tuple, w: int = 60, h: int = 126) -> QImage:
 				b = sum(k * c[2] for k, c in zip(ws, rgb)) / total
 				img.setPixel(x, y, 0xff000000 | (int(r) << 16) | (int(g) << 8) | int(b))
 		_walls[key] = img
+	return _walls[key]
+
+
+def wall_at(wall: tuple, w: int, h: int) -> QImage:
+	"""The wallpaper drawn w x h (kept: every chat of a theme is the same size)."""
+	key = (wall, w, h, "at")
+	if key not in _walls:
+		_walls[key] = wallpaper(wall).scaled(max(1, w), max(1, h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 	return _walls[key]
 
 
@@ -197,9 +216,11 @@ class Cached(QWidget):
 		self.update()
 
 	def paintEvent(self, event):
+		t0 = time.perf_counter()
 		ratio = self.devicePixelRatioF()
 		size = self.size() * ratio
-		if self._cache is None or self._cache.size() != size:
+		built = self._cache is None or self._cache.size() != size
+		if built:
 			self._cache = QPixmap(size)
 			self._cache.setDevicePixelRatio(ratio)
 			self._cache.fill(Qt.transparent)
@@ -210,6 +231,13 @@ class Cached(QWidget):
 		p = QPainter(self)
 		p.drawPixmap(0, 0, self._cache)
 		p.end()
+		if ztos._profiling:
+			k = type(self).__name__ + (" built" if built else "")
+			n, ms = PAINTS.get(k, (0, 0.0))
+			PAINTS[k] = (n + 1, ms + (time.perf_counter() - t0) * 1000)
+
+
+PAINTS = {}		# (while profiling) what Cached widgets' paints cost: name -> (count, ms)
 
 
 class List(QWidget):
@@ -288,7 +316,7 @@ class ChatRow(_Pressable):
 			badge_w = max(21.0, fb.horizontalAdvance(label) + 11)
 			r = QRectF(w - badge_w, top + 29, badge_w, 21)
 			p.setPen(Qt.NoPen)
-			p.setBrush(QColor(0x5d, 0x5d, 0x5d) if muted else ztos.accent())
+			p.setBrush(QColor(0x5d, 0x5d, 0x5d) if muted else accent())
 			p.drawRoundedRect(r, 10.5, 10.5)
 			p.setPen(QColor("white"))
 			p.drawText(r, Qt.AlignCenter, label)
@@ -338,14 +366,27 @@ class Bubble(Cached):
 	"""One message: a square box, theirs white with a small corner at the top
 	left (in a group with the sender's avatar beside it), ours dark grey with
 	the corner at the top right; a channel's post a card across the page. In
-	a round theme (THEME["round"]) the box is round, the corner a less round one."""
+	a round theme (THEME["round"]) the box is round, the corner a less round one.
+
+	A picture (tg's "pic") fills the top of the box edge to edge, the text
+	under it; with no text the time is on the picture. Stickers and round
+	videos have no box. Until the picture is on disk the tiny blurred one
+	that came with the message stands in for it; a photo tapped opens
+	(on_open(msg))."""
 	PAD, CORNER, GAP = 9.0, 9.0, 6.0
 	AV = 34.0
+	STICKER = 150.0
+	ROUND = 190.0
+	PIC_MAX_H = 330.0
+	PIC_MIN_H = 96.0
+	PIC_MIN_W = 150.0
 
-	def __init__(self, msg: dict, kind: str = "user"):
+	def __init__(self, msg: dict, kind: str = "user", on_open=None):
 		super().__init__()
 		self.msg = msg
 		self.kind = kind
+		self.on_open = on_open
+		self._down = None
 		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 		self._layout()
 
@@ -355,11 +396,17 @@ class Bubble(Cached):
 		self.redraw()
 		changed(self)
 
+	def set_pic(self, path: str):
+		"""The picture is on disk now (it has the size it had: only drawn again)."""
+		self.msg["pic"]["path"] = path
+		self.redraw()
+		changed(self)
+
 	def _text(self) -> str:
 		from tg import MEDIA_UZ
 		m = self.msg
-		label = f"[{MEDIA_UZ[m['media']]}]" if m.get("media") in MEDIA_UZ else ""
-		return "\n".join(t for t in (label, m.get("text", "")) if t) or " "
+		label = f"[{MEDIA_UZ[m['media']]}]" if m.get("media") in MEDIA_UZ and not m.get("pic") else ""
+		return "\n".join(t for t in (label, m.get("text", "")) if t)
 
 	def _card(self) -> bool:
 		return self.kind == "channel"
@@ -367,23 +414,62 @@ class Bubble(Cached):
 	def _avatar(self) -> bool:
 		return self.kind == "group" and not self.msg.get("out")
 
+	def _bare(self) -> bool:
+		"""No box: a sticker, a round video."""
+		pic = self.msg.get("pic")
+		return bool(pic) and pic["kind"] in ("sticker", "round")
+
+	def _pic_size(self):
+		"""(width, height) of the picture on the page; a picture far from the
+		box's shape is cut to it (at the sides or the top and foot)."""
+		pic = self.msg.get("pic")
+		if not pic:
+			return None
+		w, h = max(1, pic["w"]), max(1, pic["h"])
+		if pic["kind"] == "sticker":
+			s = self.STICKER / max(w, h)
+			return w * s, h * s
+		if pic["kind"] == "round":
+			return self.ROUND, self.ROUND
+		dw, dh = self.max_w, self.max_w * h / w
+		if dh > self.PIC_MAX_H:
+			dh = self.PIC_MAX_H
+			dw = min(self.max_w, max(self.PIC_MIN_W, dh * w / h))
+		return dw, max(self.PIC_MIN_H, dh)
+
 	def _layout(self):
 		self.side = 0.0 if THEME["round"] else self.CORNER		# room for the corner
 		if self._card():
 			self.max_w = PAGE_W
 		else:
 			self.max_w = min(251.0 + self.CORNER - self.side, PAGE_W - self.side - (self.AV + 6 if self._avatar() else 0))
-		inner = self.max_w - 2 * self.PAD
-		fm = QFontMetricsF(_font(FONT_REGULAR, 16))
-		self.text_rect = fm.boundingRect(QRectF(0, 0, inner, 100000), Qt.TextWordWrap, self._text())
-		self.name_h = 20.0 if self.msg.get("sender") else 0.0
-		fs = QFontMetricsF(_font(FONT_REGULAR, 12))
+		self.pic = self._pic_size()
+		text = self._text()
+		self.name_h = 20.0 if self.msg.get("sender") and not self._bare() else 0.0
 		self.foot = self._foot()
+		fs = QFontMetricsF(_font(FONT_REGULAR, 12))
+		if self._bare():
+			self.box_w, self.box_h = self.pic
+			self.text_rect = QRectF()
+			self.setFixedHeight(int(self.box_h + 4 + self.GAP + 0.999))
+			return
+		width = self.pic[0] if self.pic else self.max_w
+		fm = QFontMetricsF(_font(FONT_REGULAR, 16))
+		self.text_rect = fm.boundingRect(QRectF(0, 0, width - 2 * self.PAD, 100000), Qt.TextWordWrap, text) \
+			if text or not self.pic else QRectF()
 		body_w = max(self.text_rect.width(), fs.horizontalAdvance(self.foot) + 4,
 		             QFontMetricsF(_font(FONT_SEMIBOLD, 14)).horizontalAdvance(self.msg.get("sender", ""))
 		             if self.name_h else 0)
-		self.box_w = self.max_w if self._card() else min(self.max_w, body_w + 2 * self.PAD)
-		self.box_h = self.name_h + self.text_rect.height() + 20 + 2 * self.PAD - 4
+		if self.pic:
+			self.box_w = self.pic[0]
+		else:
+			self.box_w = self.max_w if self._card() else min(self.max_w, body_w + 2 * self.PAD)
+		top = (self.PAD + self.name_h - 2) if self.name_h else 0.0	# the sender's name over the picture
+		self.pic_top = top
+		if self.pic:
+			self.box_h = top + self.pic[1] + (self.text_rect.height() + 20 + 2 * self.PAD - 4 if text else 0)
+		else:
+			self.box_h = self.name_h + self.text_rect.height() + 20 + 2 * self.PAD - 4
 		self.setFixedHeight(int(self.box_h + self.GAP + 0.999))
 
 	def _foot(self) -> str:
@@ -398,6 +484,90 @@ class Bubble(Cached):
 		if m.get("out"):
 			return t + ("  ✓✓" if m.get("read") else "  ✓")
 		return t
+
+	# the picture
+	def _image(self):
+		"""The picture as far as it has come: the file, else the blurred stand-in, else None."""
+		pic = self.msg["pic"]
+		if pic.get("path"):
+			image = QImage(pic["path"])
+			if not image.isNull():
+				return image, True
+		if pic.get("stripped"):
+			image = QImage.fromData(pic["stripped"])
+			if not image.isNull():
+				# up in two smooth steps: soft, not blocky
+				image = image.scaled(image.width() * 3, image.height() * 3, Qt.IgnoreAspectRatio,
+				                     Qt.SmoothTransformation)
+				return image, False
+		return None, False
+
+	def _draw_pic(self, p: QPainter, rect: QRectF, clip: QPainterPath):
+		pic = self.msg["pic"]
+		image, sharp = self._image()
+		p.save()
+		if pic["kind"] == "sticker":
+			if image is not None:		# whole, as it is (its own shape, transparent round it)
+				s = min(rect.width() / image.width(), rect.height() / image.height())
+				w, h = image.width() * s, image.height() * s
+				p.drawImage(QRectF(rect.right() - w if self.msg.get("out") else rect.left(),
+				                   rect.bottom() - h, w, h), image)
+			p.restore()
+			return
+		p.setClipPath(clip)
+		if image is None:
+			p.fillRect(rect, QColor(128, 128, 128, 70))
+		else:
+			# cover the rect, cut to it
+			s = max(rect.width() / image.width(), rect.height() / image.height())
+			sw, sh = rect.width() / s, rect.height() / s
+			p.drawImage(rect, image, QRectF((image.width() - sw) / 2, (image.height() - sh) / 2, sw, sh))
+		p.restore()
+		if pic["kind"] in ("video", "gif", "round"):
+			c = rect.center()
+			p.setPen(Qt.NoPen)
+			p.setBrush(QColor(0, 0, 0, 120))
+			p.drawEllipse(c, 22, 22)
+			p.setBrush(QColor("white"))
+			tri = QPainterPath(QPointF(c.x() - 7, c.y() - 11))
+			tri.lineTo(c.x() + 11, c.y())
+			tri.lineTo(c.x() - 7, c.y() + 11)
+			tri.closeSubpath()
+			p.drawPath(tri)
+			label = "GIF" if pic["kind"] == "gif" else f"{pic['dur'] // 60}:{pic['dur'] % 60:02d}" if pic["dur"] else ""
+			if label and pic["kind"] != "round":
+				self._pill(p, QPointF(rect.left() + 8, rect.top() + 8), label)
+
+	def _pill(self, p: QPainter, at: QPointF, text: str, right: bool = False):
+		"""Small white words on a dark pill (over a picture): at its top left, or top right if `right`."""
+		p.setFont(_font(FONT_REGULAR, 12))
+		w = QFontMetricsF(p.font()).horizontalAdvance(text) + 14
+		r = QRectF(at.x() - w if right else at.x(), at.y(), w, 20)
+		p.setPen(Qt.NoPen)
+		p.setBrush(QColor(0, 0, 0, 120))
+		p.drawRoundedRect(r, 10, 10)
+		p.setPen(QColor("white"))
+		p.drawText(r, Qt.AlignCenter, text)
+
+	# a photo tapped
+	def _opens(self) -> bool:
+		pic = self.msg.get("pic")
+		return bool(pic and pic["kind"] == "photo" and self.on_open)
+
+	def mousePressEvent(self, event):
+		if not self._opens():
+			event.ignore()
+			return
+		self._down = (event.globalPosition(), time.perf_counter())
+
+	def mouseReleaseEvent(self, event):
+		down, self._down = self._down, None
+		if not (down and self._opens()):
+			event.ignore()
+			return
+		moved = event.globalPosition() - down[0]
+		if abs(moved.x()) + abs(moved.y()) < 14 and time.perf_counter() - down[1] < 0.5:
+			self.on_open(self.msg)
 
 	def draw(self, p: QPainter):
 		m, w = self.msg, self.width()
@@ -415,9 +585,18 @@ class Bubble(Cached):
 		if self._avatar():
 			draw_avatar(p, 0, y, self.AV, m.get("sender_id", 0), m.get("sender", ""), 14)
 		box = QRectF(x, y, self.box_w, self.box_h)
+		if self._bare():
+			clip = QPainterPath()
+			clip.addEllipse(box)
+			self._draw_pic(p, box, clip)
+			self._pill(p, QPointF(x + self.box_w - 4, y + self.box_h - 22), self.foot, right=True)
+			return
 		if r:
-			p.fillPath(bubble_path(box, r, "" if card else "tr" if out else "tl"), fill)
+			shape = bubble_path(box, r, "" if card else "tr" if out else "tl")
+			p.fillPath(shape, fill)
 		else:
+			shape = QPainterPath()
+			shape.addRect(box)
 			p.fillRect(box, fill)
 			if not card:
 				if out:
@@ -440,15 +619,46 @@ class Bubble(Cached):
 			p.drawText(QPointF(x + self.PAD, ty + fm.ascent() - 2),
 			           fm.elidedText(m["sender"], Qt.ElideRight, self.box_w - 2 * self.PAD))
 			ty += self.name_h
+		if self.pic:
+			self._draw_pic(p, QRectF(x, y + self.pic_top, self.pic[0], self.pic[1]), shape)
+			ty = y + self.pic_top + self.pic[1] + self.PAD
+			if not self._text():
+				self._pill(p, QPointF(x + self.box_w - 6, y + self.box_h - 26), self.foot, right=True)
+				return
 		p.setPen(ink)
 		p.setFont(_font(FONT_REGULAR, 16))
 		p.drawText(QRectF(x + self.PAD, ty, self.box_w - 2 * self.PAD + 1, self.text_rect.height() + 2),
-		           Qt.TextWordWrap, self._text())
+		           Qt.TextWordWrap, self._text() or " ")
 		p.setPen(subtle)
 		p.setFont(_font(FONT_REGULAR, 12))
 		fm = QFontMetricsF(p.font())
 		p.drawText(QPointF(x + self.box_w - self.PAD - fm.horizontalAdvance(self.foot),
 		                   y + self.box_h - self.PAD + 2), self.foot)
+
+
+class PhotoView(QWidget):
+	"""A photo across the whole screen, on black: what is on disk now, the largest when it comes."""
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.image = None
+		self.setAttribute(Qt.WA_OpaquePaintEvent)
+
+	def show_file(self, path: str):
+		image = QImage(path)
+		if not image.isNull() and (self.image is None or image.width() >= self.image.width()):
+			self.image = image
+			self.update()
+
+	def paintEvent(self, event):
+		p = QPainter(self)
+		p.fillRect(self.rect(), QColor("black"))
+		if self.image is not None:
+			p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+			s = min(self.width() / self.image.width(), self.height() / self.image.height())
+			w, h = self.image.width() * s, self.image.height() * s
+			p.drawImage(QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h), self.image)
+		p.end()
 
 
 class DayLabel(Cached):
@@ -483,7 +693,7 @@ class UnreadLabel(Cached):
 
 	def draw(self, p: QPainter):
 		p.fillRect(QRectF(0, 6, self.width(), 24), QColor(0, 0, 0, 110) if THEME["wall"] else CHROME)
-		p.setPen(ztos.accent().lighter(130) if THEME["wall"] else ztos.accent())
+		p.setPen(accent().lighter(130) if THEME["wall"] else accent())
 		p.setFont(_font(FONT_SEMIBOLD, 13))
 		p.drawText(QRectF(0, 6, self.width(), 24), Qt.AlignCenter,
 		           f"{self.count} ta o'qilmagan xabar" if self.count else "o'qilmagan xabarlar")
@@ -530,7 +740,7 @@ class ThemeRow(_Pressable):
 		p.setFont(_font(FONT_SEMILIGHT, 25))
 		p.drawText(QPointF(x, self.H / 2 + 4), t["name"])
 		p.setFont(_font(FONT_REGULAR, 14))
-		p.setPen(ztos.accent() if on else GREY)
+		p.setPen(QColor(t["accent"]) if on and t["accent"] else ztos.accent() if on else GREY)
 		p.drawText(QPointF(x, self.H / 2 + 26), "tanlangan" if on else "Windows Phone" if not t["wall"] else
 		           "yumaloq pufakchalar, rangli fon")
 
@@ -612,8 +822,7 @@ class TiledPage(ztos.Page):
 		size = self.viewport.size()
 		key = (self.wallpaper, size.width(), size.height())
 		if self._wall_key != key:
-			self._wall = wallpaper(self.wallpaper).scaled(max(1, size.width()), max(1, size.height()),
-			                                              Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+			self._wall = wall_at(self.wallpaper, size.width(), size.height())
 			self._wall_key = key
 			self._wall_gen += 1
 		return self._wall
@@ -628,7 +837,7 @@ class TiledPage(ztos.Page):
 		return super().eventFilter(obj, event)
 
 	def _clear(self) -> QColor:
-		return QColor(Qt.transparent) if self.wallpaper else QColor("black")
+		return QColor(Qt.transparent) if self.wallpaper else ztos.background()
 
 	def _key(self, i: int):
 		return (id(self), "tile", i)
@@ -708,6 +917,30 @@ class TiledPage(ztos.Page):
 	def _verify(self):
 		self._suspect()
 
+	def release(self):
+		"""The page is gone for good: its pictures off the GPU (a chat's tiles are
+		up to 120 MB), the page itself deleted once its page turn is over."""
+		layer = ztos._layer_of(self)
+		if layer is not None:
+			for i in list(self._tiles):
+				layer.drop(self._key(i))
+				layer.drop((id(self), "blur", i))
+			layer.drop((id(self), "wall"))
+			for bar in self.glass:
+				bar.release(layer)
+		self._tiles.clear()
+		self._small.clear()
+		self._blur.clear()
+		self._gl_idle.stop()
+		QTimer.singleShot(2000, self.deleteLater)
+
+	def retheme(self):
+		"""A new theme: every tile drawn again (nearest first, while still)."""
+		for i in self._tiles:
+			self._tiles[i] = "stale"
+		if not self._gl_on:
+			self._gl_idle.start()
+
 	def dirty(self, widget: QWidget):
 		"""`widget` (on this list) shows something new: its tiles are drawn again."""
 		y = widget.mapTo(self.body, QPoint(0, 0)).y()
@@ -770,7 +1003,7 @@ class TiledPage(ztos.Page):
 		return sorted(range(self._count()), key=lambda i: abs(i - here))[:self.MOST]
 
 	def _gl_prepare(self, force: bool = False):
-		"""Idle work, one tile a turn: the nearest one not right is drawn again."""
+		"""Idle work, a little a turn: the nearest tile not right is drawn again."""
 		layer = ztos._layer_of(self)
 		if layer is None or not self.scrolls or self._max() <= 0 or not self.isVisible() or self._gl_on:
 			return
@@ -785,9 +1018,17 @@ class TiledPage(ztos.Page):
 			self._prints.pop(i, None)
 			self._small.pop(i, None)
 			self._blur.pop(i, None)
+		# a turn does at most ~16 ms of it (a check is ~15, a tile 40-90): a finger
+		# that comes meanwhile waits no longer than that
+		t0 = time.perf_counter()
 		for i in keep:
+			if self._tiles.get(i) == "ok":
+				continue
 			if not self._fresh(i):
 				self._render(i)
+				self._gl_idle.start()
+				return
+			if time.perf_counter() - t0 > 0.016:
 				self._gl_idle.start()
 				return
 
@@ -805,7 +1046,7 @@ class TiledPage(ztos.Page):
 			bar.gpu_prepare(layer)
 			bar.gpu_where(self)
 		self._gl_on = True
-		ztos._solid(layer, ("sys", "black"), QColor("black"))
+		ztos._solid(layer, ztos._bg_key(), ztos.background())
 		if self.wallpaper:
 			self.wall_image()
 			if self._wall_up != self._wall_gen or not layer.has((id(self), "wall")):
@@ -823,7 +1064,7 @@ class TiledPage(ztos.Page):
 		layer = ztos._layer_of(self)
 		w, view, s = float(self.viewport.width()), float(self.viewport.height()), self._scroll
 		self._frames = getattr(self, "_frames", 0) + 1
-		quads = [Quad.rect(("sys", "black"), ztos._WHOLE, self._gl_ox, self._gl_oy, w, view)]
+		quads = [Quad.rect(ztos._bg_key(), ztos._WHOLE, self._gl_ox, self._gl_oy, w, view)]
 		if layer is None:
 			return quads
 		if self.wallpaper and layer.has((id(self), "wall")):

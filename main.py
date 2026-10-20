@@ -14,6 +14,8 @@ import time
 # the S10's 4x that is all of them (a 21-point name is 84 pixels). Cached they
 # draw 4x faster. Read when the first text is drawn, so before anything is.
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
+# Telegram's thread runs Python too: the UI thread gets the interpreter back within 1 ms, not 5
+sys.setswitchinterval(0.001)
 
 from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -23,12 +25,22 @@ import views
 import ztos
 from glass import GlassBar
 from tg import DATA, Backend, preview
-from views import (THEMES, Bubble, ChatRow, ContactRow, DayLabel, List, QrView, ThemeRow, TiledPage, UnreadLabel,
-                   changed, day_title, draw_avatar, set_photo, stamp_now)
+from views import (THEMES, Bubble, ChatRow, ContactRow, DayLabel, List, PhotoView, QrView, ThemeRow, TiledPage,
+                   UnreadLabel, changed, day_title, draw_avatar, set_photo, stamp_now)
 
 app = ztos.App()
 tg = Backend()
 _local_ids = itertools.count(-1, -1)	# ids for bubbles shown before Telegram gives theirs
+_histories = {}		# chat id -> (messages, info) it showed last: it opens with them at once
+HISTORIES = 30
+AHEAD = 8		# the top chats with nothing unread: their messages fetched before they are opened
+
+
+def remember(chat_id: int, msgs: list, info: dict):
+	_histories.pop(chat_id, None)
+	_histories[chat_id] = (msgs, info)
+	while len(_histories) > HISTORIES:
+		_histories.pop(next(iter(_histories)))
 SETTINGS = os.path.join(DATA, "settings.json")
 
 
@@ -49,6 +61,7 @@ def save_settings(**changes):
 
 
 views.set_theme(load_settings().get("theme", "qora"))
+ztos.set_background(views.THEME["bg"])
 
 
 class Connecting(ztos.Page):
@@ -99,7 +112,7 @@ class PhoneLogin(ztos.Page):
 		else:
 			self.text("Hisobingizda ikki bosqichli tekshiruv yoqilgan. Bulut parolini kiriting.", 15)
 			self.box = self.textbox("parol", password=True, on_submit=lambda _: self.go())
-		self.error = self.text("", 14, ztos.accent())
+		self.error = self.text("", 14, views.accent())
 
 	def go(self):
 		value = self.box.text().strip()
@@ -152,6 +165,8 @@ class Chats(TiledPage):
 		for c in chats:
 			self.rows[c["id"]] = self.chat_list.add(ChatRow(c, open_chat))
 		update_tile()
+		QTimer.singleShot(3000, lambda: [tg.load_history(c["id"], ahead=True) for c in chats[:AHEAD]
+		                                 if not c.get("unread") and c["id"] not in _histories])
 
 	def _incoming(self, msg: dict, chat: dict):
 		self._waiting.pop(chat["id"], None)
@@ -214,8 +229,14 @@ class Chat(TiledPage):
 	that stays put (off the list, so its cursor is not a change of it). With
 	unread messages it opens where they start. Older ones come when the list
 	stops near its top, newer ones (if it opened among the unread) near its foot.
-	Over its head glass too: back, the name and how they are, the avatar."""
+	Over its head glass too: back, the name and how they are, the avatar.
+
+	It goes in (open()) with its messages on it, in one motion: those it
+	showed last if it has no unread ones, else once Telegram has sent them
+	(WAIT at most, then without them). Messages that come while a page turns
+	wait for it: building them would hold its frames."""
 	NEAR = 600		# points from an end
+	WAIT = 700		# ms
 	TYPING = 6000		# ms "writing..." stays without a word more from Telegram
 
 	def __init__(self, chat: dict):
@@ -228,6 +249,9 @@ class Chat(TiledPage):
 		self.asking = False
 		self._shift = 0
 		self._stick = False		# kept at the bottom as the list grows
+		self._pending = False		# opened, not in yet: in once the messages are on it
+		self._from = None
+		self._built = None		# what the list was built from
 		# at the foot, over the list: glass (glass.GlassBar)
 		if self.kind == "channel":
 			self.box = None
@@ -253,12 +277,40 @@ class Chat(TiledPage):
 	def _links(self):
 		return ((tg.history, self._history), (tg.older, self._older), (tg.newer, self._newer),
 		        (tg.incoming, self._incoming), (tg.sent, self._sent), (tg.read_out, self._read_out),
-		        (tg.avatar, self._avatar), (tg.info, self._info), (tg.typing, self._typing))
+		        (tg.avatar, self._avatar), (tg.info, self._info), (tg.typing, self._typing),
+		        (tg.pic, self._pic))
 
-	def shown(self):
-		self.reload()
+	def open(self):
+		self._opened = time.perf_counter()
+		self._from = app.page
+		self._pending = True
+		# among the app's pages (hidden) from the start: the bubbles are then made
+		# in their place, not all moved there when it goes in (90 ms for 40)
+		app._layout.addWidget(self)
+		self.busy(True)
+		tg.load_history(self.chat["id"])
+		cached = _histories.get(self.chat["id"])
+		if cached and not self.chat.get("unread"):
+			self._history(self.chat["id"], *cached)		# in at once; Telegram's answer may change it after
+		else:
+			QTimer.singleShot(self.WAIT, self._go_in)
+
+	def _go_in(self):
+		if self._pending:
+			if ztos._profiling:
+				print(f"tepegram in after {(time.perf_counter() - self._opened) * 1000:.0f} ms"
+				      f"{'' if self._built else ' (without its messages)'}", file=sys.stderr, flush=True)
+			self._pending = False
+			if app.page is self._from:		# (not if the person went elsewhere meanwhile)
+				app.push(self)
+			else:
+				for sig, slot in self._links():
+					sig.disconnect(slot)
+				app._layout.removeWidget(self)
+				self.deleteLater()
 
 	def reload(self):
+		self._built = None
 		self.busy(True)
 		tg.load_history(self.chat["id"])
 
@@ -282,7 +334,7 @@ class Chat(TiledPage):
 			if day != last_day:
 				last_day = day
 				out.append(DayLabel(m["date"]))
-			b = Bubble(m, self.kind)
+			b = Bubble(m, self.kind, self.open_photo)
 			self.ids[m["id"]] = b
 			out.append(b)
 		return out
@@ -298,17 +350,44 @@ class Chat(TiledPage):
 	def _history(self, chat_id: int, msgs: list, info: dict):
 		if chat_id != self.chat["id"]:
 			return
+		if ztos._animating() and not self._pending:
+			QTimer.singleShot(60, lambda: self._history(chat_id, msgs, info))
+			return
 		self.busy(False)
+		built = [(m["id"], m.get("text"), m.get("read"), bool(m.get("pic"))) for m in msgs]
+		if built == self._built:
+			return		# as it is already
+		self._built = built
 		t = time.perf_counter()
 		self.bubbles.clear()
 		self.ids = {}
 		first = info.get("first_unread", 0)
 		widgets = self._widgets(msgs, None, first, self.chat.get("unread", 0))
+		t_made = time.perf_counter()
 		for w in widgets:
 			self.bubbles.add(w)
+		t_added = time.perf_counter()
 		self.more_before, self.more_after = len(msgs) >= 10, info.get("newer", False)
 		label = next((w for w in widgets if isinstance(w, UnreadLabel)), None)
-		if label is not None:
+		if self._pending:
+			# not on the screen yet: laid out and scrolled now, so it turns in as it will be
+			self.resize(app.page.size())
+			self.layout().activate()
+			self._fit()
+			self._stick = label is None
+			t_fit = time.perf_counter()
+			self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y() - self.head.space() if label else 10 ** 7)
+			t_scroll = time.perf_counter()
+			views.PAINTS.clear()
+			self._go_in()
+			if ztos._profiling:
+				print("tepegram paints:", {k: (n, round(ms)) for k, (n, ms) in views.PAINTS.items()},
+				      file=sys.stderr, flush=True)
+			if ztos._profiling:
+				print(f"tepegram open: made {(t_made - t) * 1000:.0f} added {(t_added - t_made) * 1000:.0f} "
+				      f"fit {(t_fit - t_added) * 1000:.0f} scroll {(t_scroll - t_fit) * 1000:.0f} "
+				      f"push {(time.perf_counter() - t_scroll) * 1000:.0f} ms", file=sys.stderr, flush=True)
+		elif label is not None:
 			self._stick = False
 			QTimer.singleShot(0, lambda: self._fit() or self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y()
 			                                                           - self.head.space()))
@@ -434,6 +513,15 @@ class Chat(TiledPage):
 			if b.msg.get("out") and not b.msg.get("read") and 0 < mid <= max_id:
 				b.set_msg(dict(b.msg, read=True))
 
+	# pictures
+	def _pic(self, chat_id: int, msg_id: int, path: str):
+		b = self.ids.get(msg_id)
+		if chat_id == self.chat["id"] and b is not None and b.msg.get("pic"):
+			b.set_pic(path)
+
+	def open_photo(self, msg: dict):
+		app.push(Viewer(self.chat["id"], msg))
+
 	# the head
 	def _lines(self):
 		if self.writing is not None:
@@ -469,6 +557,34 @@ class Chat(TiledPage):
 	def back(self) -> bool:
 		for sig, slot in self._links():
 			sig.disconnect(slot)
+		self.release()
+		return super().back()
+
+
+class Viewer(ztos.Page):
+	"""A photo on the whole screen: the bubble's picture at once, the largest once it has come."""
+
+	def __init__(self, chat_id: int, msg: dict):
+		super().__init__("", scroll=False, header=False)
+		self.key = (chat_id, msg["id"])
+		self.view = PhotoView(self)
+		pic = msg.get("pic") or {}
+		if pic.get("path"):
+			self.view.show_file(pic["path"])
+		tg.full.connect(self._full)
+		tg.fetch_full(chat_id, msg["id"])
+
+	def resizeEvent(self, event):
+		super().resizeEvent(event)
+		self.view.setGeometry(self.rect())
+		self.view.raise_()
+
+	def _full(self, chat_id: int, msg_id: int, path: str):
+		if (chat_id, msg_id) == self.key:
+			self.view.show_file(path)
+
+	def back(self) -> bool:
+		tg.full.disconnect(self._full)
 		return super().back()
 
 
@@ -480,7 +596,7 @@ class Settings(ztos.Page):
 		self.theme = self.entry("chat mavzusi", views.THEME["name"], lambda: app.push(Themes(self)))
 		self.entry("chatlarni yangilash", "ro'yxatni Telegram'dan qayta olish", self.refresh)
 		self.entry("chiqish", "bu telefonda Telegram'dan chiqish", self.log_out)
-		self.section("TEPEGRAM 0.4")
+		self.section("TEPEGRAM 0.5")
 		self.text("Telegram uchun norasmiy ilova. Telethon (MIT) asosida.", 13)
 
 	def refresh(self):
@@ -506,6 +622,7 @@ class Themes(ztos.Page):
 	def pick(self, theme: dict):
 		views.set_theme(theme["id"])
 		save_settings(theme=theme["id"])
+		retheme()
 		self.settings.theme.set_detail(theme["name"])
 		app.pop()
 
@@ -521,7 +638,7 @@ class Home(ztos.Pivot):
 			("tabs", [("chats", "chatlar", lambda: self.turn(0)), ("contacts", "kontaktlar", lambda: self.turn(1)),
 			          ("settings", "sozlamalar", lambda: app.push(Settings()))]),
 			("circle", "search", lambda: ztos.notify("Tepegram", "qidiruv hali yo'q"))],
-			page=self.current)
+			height=54, page=self.current)
 		for page in pages:
 			page.glass.append(self.tabs)
 			page.list.setContentsMargins(ztos.MARGIN, 0, ztos.MARGIN, self.tabs.space())
@@ -531,7 +648,10 @@ class Home(ztos.Pivot):
 		quads = super()._quads()
 		layer = ztos._layer_of(self)
 		if layer is not None:
-			quads += self.tabs.still_quads(layer)
+			# where the pages are (0: chats, 1: contacts; from contacts on to chats it wraps): the lens follows
+			n = len(self.pages)
+			u = (-self._x / max(1.0, float(self._area.width()))) % n
+			quads += self.tabs.still_quads(layer, lens=u if u <= n - 1 else (n - u) * (n - 1))
 		return quads
 
 
@@ -549,12 +669,23 @@ def on_avatar(chat_id: int, path: str):
 			row.update_chat(row.chat)
 
 
+def retheme():
+	"""The theme changed: the background everywhere, and what is drawn in its accent."""
+	ztos.set_background(views.THEME["bg"])
+	for rows in (chats.rows, contacts.rows):
+		for row in rows.values():
+			row.redraw()
+	for page in (chats, contacts):
+		page.retheme()
+	home.tabs.retheme()
+
+
 def active() -> bool:
 	return QGuiApplication.applicationState() == Qt.ApplicationActive
 
 
 def open_chat(chat: dict):
-	app.push(Chat(chat))
+	Chat(chat).open()
 
 
 def update_tile():
@@ -583,10 +714,14 @@ def on_incoming(m: dict, chat: dict):
 		ztos.notify(chat["name"], (m["sender"] + ": " if m["sender"] else "") + preview(m["text"], m["media"]))
 
 
+tg.history.connect(remember)
 tg.state.connect(on_state)
 tg.me.connect(me.update)
 tg.incoming.connect(on_incoming)
 tg.avatar.connect(on_avatar)
 tg.error.connect(lambda text: ztos.notify("Tepegram", text))
 tg.start()
+# the theme's wallpaper made while nothing else is, not when the first chat opens
+QTimer.singleShot(2500, lambda: views.THEME["wall"] and views.wall_at(views.THEME["wall"], home.width(),
+                                                                      home.height()))
 app.run(Connecting())
