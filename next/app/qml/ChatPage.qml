@@ -69,17 +69,71 @@ Page {
                          text: store.preview(m.content) }
     }
 
+    readonly property var pictured: ["messagePhoto", "messageVideo", "messageAnimation", "messageSticker", "messageVideoNote"]
+
     function shown(content) {
         const t = content["@type"]
         return {
             text: t === "messageText" ? content.text.text : (content.caption ? content.caption.text : ""),
-            kind: t === "messageText" ? "" : (t === "messageSticker" && content.sticker.emoji ? content.sticker.emoji + " Stiker"
-                                              : store.kinds[t] || "Bu turdagi xabar hali yo'q")
+            kind: t === "messageText" || pictured.indexOf(t) >= 0 ? ""
+                : store.kinds[t] || "Bu turdagi xabar hali yo'q"
         }
+    }
+
+    // a still picture TDLib can give for a thumbnail (not an animation or a video)
+    function still(th) {
+        const f = th && th.format["@type"]
+        return f === "thumbnailFormatJpeg" || f === "thumbnailFormatWebp" || f === "thumbnailFormatPng" || f === "thumbnailFormatGif"
+            ? th.file : null
+    }
+
+    // what a message shows as a picture: its kind, size, Telegram's tiny preview, and the file
+    // to show (the photo's size nearest 640 px, else a video's or a sticker's still)
+    property var files: ({})         // message id -> the picture's file
+    function media(c) {
+        const t = c["@type"]
+        const r = { picKind: "", picW: 1, picH: 1, mini: "", dur: 0, file: null }
+        if (t === "messagePhoto" && c.photo.sizes.length) {
+            const sizes = c.photo.sizes      // small to big
+            let best = sizes[sizes.length - 1]
+            for (const z of sizes)
+                if (z.width >= 640) {
+                    best = z
+                    break
+                }
+            Object.assign(r, { picKind: "photo", picW: best.width, picH: best.height, file: best.photo,
+                               mini: c.photo.minithumbnail ? c.photo.minithumbnail.data : "" })
+        } else if (t === "messageVideo" || t === "messageAnimation") {
+            const v = t === "messageVideo" ? c.video : c.animation
+            Object.assign(r, { picKind: t === "messageVideo" ? "video" : "gif", picW: v.width || 1, picH: v.height || 1,
+                               dur: v.duration, file: still(v.thumbnail), mini: v.minithumbnail ? v.minithumbnail.data : "" })
+        } else if (t === "messageSticker") {
+            const st = c.sticker
+            Object.assign(r, { picKind: "sticker", picW: st.width || 1, picH: st.height || 1,
+                               file: st.format["@type"] === "stickerFormatWebp" ? st.sticker : still(st.thumbnail) })
+        } else if (t === "messageVideoNote") {
+            const v = c.video_note
+            Object.assign(r, { picKind: "round", picW: 1, picH: 1, dur: v.duration, file: still(v.thumbnail),
+                               mini: v.minithumbnail ? v.minithumbnail.data : "" })
+        }
+        return r
+    }
+
+    function loadPic(id) {
+        const f = files[id]
+        if (f)
+            store.fetch(f, 1, (path) => {
+                const i = page.indexOf(id)
+                if (i >= 0)
+                    messages.setProperty(i, "pic", path)
+            })
     }
 
     function row(m) {
         const s = shown(m.content)
+        const p = media(m.content)
+        if (p.file)
+            files[m.id] = p.file
         const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" ? m.reply_to : null
         let quote = null
         if (r && r.chat_id === chatId) {
@@ -98,7 +152,9 @@ Page {
             views: m.interaction_info ? m.interaction_info.view_count : 0,
             edited: m.edit_date > 0,
             replyId: r ? r.message_id : 0,
-            quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : "")
+            quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : ""),
+            picKind: p.picKind, picW: p.picW, picH: p.picH, mini: p.mini, dur: p.dur,
+            pic: p.file && p.file.local.is_downloading_completed ? p.file.local.path : ""
         }
     }
 
@@ -293,6 +349,12 @@ Page {
                 const s = page.shown(content)
                 messages.setProperty(i, "text", s.text)
                 messages.setProperty(i, "kind", s.kind)
+                const p = page.media(content)
+                if (p.file && p.file.id !== (page.files[id] || {}).id) {
+                    page.files[id] = p.file
+                    messages.setProperty(i, "pic", "")
+                    page.loadPic(id)
+                }
             }
             if (page.quotes[id]) {
                 page.quotes[id].text = store.preview(content)
@@ -363,7 +425,24 @@ Page {
                 required property var replyId
                 required property string quoteName
                 required property string quoteText
+                required property string picKind
+                required property int picW
+                required property int picH
+                required property string mini
+                required property string pic
+                required property int dur
                 readonly property Item face: bubble
+                // a picture: photo, video or GIF in the bubble; sticker and round video without one
+                readonly property bool media: picKind !== ""
+                readonly property bool bare: picKind === "sticker" || picKind === "round"
+                readonly property real aspect: picH / picW
+                readonly property real pw: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
+                                         : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
+                readonly property real ph: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, aspect)
+                                         : Math.max(110, Math.min(360, aspect * wide))
+                readonly property real wide: Math.min(width * 0.72, 270)
+                readonly property bool overlaid: media && text === ""     // the time over the picture
+                Component.onCompleted: if (media && !pic) page.loadPic(msgId)
                 // a run: one sender's messages within 10 minutes of each other. Its first (the
                 // top) has the name and more space over it, its last (the bottom) the tail.
                 readonly property bool first: page.apart(messages.get(index + 1), senderKey, date)
@@ -402,14 +481,16 @@ Page {
                         x: item.out ? item.width - width - 8 - 6 : 8 + 6
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
-                        readonly property bool stampUnder: body.last + stampRoom > item.most - 24
-                        width: Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
+                        readonly property bool stampUnder: !item.overlaid && body.last + stampRoom > (item.media ? width : item.most) - 24
+                        width: item.bare ? item.pw : item.media ? item.pw + 6
+                             : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
                                                             stampUnder ? stamp.implicitWidth : body.last + stampRoom) + 24)
-                        height: body.y + body.height + (stampUnder ? 24 : 8)
+                        height: item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
+                              : body.y + body.height + (stampUnder ? 24 : 8)
 
                         Rectangle {     // while the stretched picture loads
                             anchors.fill: parent
-                            visible: shape.status !== Image.Ready
+                            visible: !item.bare && shape.status !== Image.Ready
                             radius: 17
                             color: item.out ? Theme.bubbleOut : Theme.bubbleIn
                         }
@@ -423,6 +504,7 @@ Page {
                             source: "image://bubble/" + (item.out ? "out/" : "in/") + (item.first ? "b/" : "s/") + (item.last ? "t/" : "s/")
                                     + String(item.out ? Theme.bubbleOut : Theme.bubbleIn).slice(1) + "/" + Screen.devicePixelRatio
                             smooth: true
+                            visible: !item.bare
                         }
 
                         // a long press lifts it into the menu; while pressed it sinks a little (iOS)
@@ -481,11 +563,59 @@ Page {
                             }
                             MouseArea { anchors.fill: parent; onClicked: page.jump(item.replyId) }
                         }
+                        Item {          // the picture: Telegram's blurred preview at once, the picture over it when here
+                            id: picture
+                            visible: item.media
+                            x: item.bare ? 0 : 3
+                            y: item.bare ? 0 : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 4 : 3
+                            width: item.pw; height: visible ? item.ph : 0
+                            readonly property string corner: item.picKind === "round" ? "-1" : item.bare ? "0" : "14"
+                            Image {
+                                anchors.fill: parent
+                                visible: item.mini !== "" && full.status !== Image.Ready
+                                asynchronous: true
+                                // (in points: Qt asks the provider for these times the pixel ratio)
+                                sourceSize: Qt.size(12, 12 * item.ph / item.pw)     // blurred: small is enough
+                                source: item.mini ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/mini/" + item.mini : ""
+                                smooth: true
+                            }
+                            Image {
+                                id: full
+                                anchors.fill: parent
+                                asynchronous: true
+                                sourceSize: Qt.size(Math.round(item.pw), Math.round(item.ph))
+                                source: item.pic ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/" + item.pic : ""
+                                opacity: status === Image.Ready ? 1 : 0
+                                Behavior on opacity { OpacityAnimator { duration: 150 } }
+                            }
+                            Rectangle {     // a video or a GIF: play over it, its length in the corner
+                                visible: item.picKind === "video" || item.picKind === "gif"
+                                anchors.centerIn: parent
+                                width: 44; height: 44; radius: 22
+                                color: Qt.rgba(0, 0, 0, 0.45)
+                                Text { anchors.centerIn: parent; anchors.horizontalCenterOffset: 2; text: "▶"; color: "white"; font.pixelSize: 18 }
+                            }
+                            Rectangle {
+                                visible: item.picKind === "video" || item.picKind === "gif" || item.picKind === "round"
+                                x: 6; y: item.picKind === "round" ? parent.height - 26 : 6
+                                width: len.implicitWidth + 12; height: 20; radius: 10
+                                color: Qt.rgba(0, 0, 0, 0.45)
+                                Text {
+                                    id: len
+                                    anchors.centerIn: parent
+                                    text: item.picKind === "gif" ? "GIF" : Math.floor(item.dur / 60) + ":" + String(item.dur % 60).padStart(2, "0")
+                                    color: "white"
+                                    font.family: Theme.font; font.pixelSize: 12
+                                }
+                            }
+                        }
                         Text {
                             id: body
+                            visible: !item.overlaid
                             x: 12
-                            y: quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 2 : 8
-                            width: Math.min(implicitWidth, item.most - 24)
+                            y: item.media ? picture.y + picture.height + 5
+                             : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 2 : 8
+                            width: item.media ? bubble.width - 24 : Math.min(implicitWidth, item.most - 24)
                             wrapMode: Text.Wrap
                             textFormat: Text.PlainText
                             property real last: 0       // the last line's width
@@ -494,14 +624,20 @@ Page {
                             color: item.out ? Theme.outText : Theme.inText
                             font.family: Theme.font; font.pixelSize: 16
                         }
+                        Rectangle {     // under the time when it is over a picture
+                            visible: item.overlaid
+                            anchors.fill: stamp; anchors.margins: -3; anchors.leftMargin: -6; anchors.rightMargin: -6
+                            radius: height / 2
+                            color: Qt.rgba(0, 0, 0, 0.4)
+                        }
                         Text {
                             id: stamp
-                            anchors.right: parent.right; anchors.rightMargin: 10
-                            anchors.bottom: parent.bottom; anchors.bottomMargin: 6
+                            anchors.right: parent.right; anchors.rightMargin: item.overlaid ? (item.bare ? 8 : 12) : 10
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: item.overlaid ? (item.bare ? 6 : 10) : 6
                             textFormat: Text.StyledText
                             text: (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
-                                  (item.out ? (item.sending ? " ◷" : " <font color='" + Theme.check + "'>✓</font>") : "")
-                            color: item.out ? Theme.outMeta : Theme.inMeta
+                                  (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid ? "white" : Theme.check) + "'>✓</font>") : "")
+                            color: item.overlaid ? "white" : item.out ? Theme.outMeta : Theme.inMeta
                             font.family: Theme.font; font.pixelSize: 12
                         }
                     }

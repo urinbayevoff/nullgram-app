@@ -8,6 +8,7 @@ reach QML as queued signals, which QML takes without Python.
 
   python3 tepegram.py [--test-dc]      (--test-dc: Telegram's test servers, a throwaway account)
 """
+import base64
 import ctypes
 import json
 import os
@@ -113,6 +114,46 @@ class Round(QQuickImageProvider):
 		return out
 
 
+class Pic(QQuickImageProvider):
+	"""image://pic/<radius>/<width>/<path> (or .../mini/<base64>): a message's picture at the size
+	asked, cut to the middle, its corners rounded (radius 0: none; -1: a circle). `width` is the
+	item's in points, so the radius scales with the pixels asked. `mini` is Telegram's tiny blurred
+	preview, there before the picture is. On Qt's image-loading threads."""
+
+	def __init__(self):
+		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
+
+	def requestImage(self, key, size, requested):
+		radius, width, rest = key.split("/", 2)
+		if rest.startswith("mini/"):
+			src = QImage.fromData(base64.b64decode(rest[5:]))
+		else:
+			src = QImage(rest)
+		if requested.isValid() and requested.width() > 0 and requested.height() > 0:
+			w, h = requested.width(), requested.height()
+		else:
+			w, h = max(src.width(), 1), max(src.height(), 1)
+		out = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+		out.fill(Qt.transparent)
+		if src.isNull():
+			return out
+		k = w / max(float(width), 1.0)
+		r = float(radius)
+		p = QPainter(out)
+		p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+		if r:
+			clip = QPainterPath()
+			if r < 0:
+				clip.addEllipse(QRectF(0, 0, w, h))
+			else:
+				clip.addRoundedRect(QRectF(0, 0, w, h), r * k, r * k)
+			p.setClipPath(clip)
+		big = src.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+		p.drawImage(0, 0, big, (big.width() - w) // 2, (big.height() - h) // 2, w, h)
+		p.end()
+		return out
+
+
 class Bubble(QQuickImageProvider):
 	"""image://bubble/<in|out>/<top: b|s>/<bottom: t|s>/<rrggbb>/<scale>: a message bubble to stretch
 	(BorderImage, borders R and R + TAIL on the tail's side), as Telegram-iOS draws them from
@@ -193,6 +234,7 @@ def main():
 	view.engine().addImageProvider("round", Round())
 	view.engine().addImageProvider("wall", Wall())
 	view.engine().addImageProvider("bubble", Bubble())
+	view.engine().addImageProvider("pic", Pic())
 	view.setResizeMode(QQuickView.SizeRootObjectToView)
 	view.setSource(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
 	if view.status() == QQuickView.Error:

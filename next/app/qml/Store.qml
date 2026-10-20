@@ -395,7 +395,27 @@ QtObject {
         send({ "@type": "downloadFile", file_id: f.id, priority: 1, offset: 0, limit: 0, synchronous: false })
     }
 
+    // a file's local path to `done`, now or once TDLib has it (one download however many ask)
+    property var _waiters: ({})
+    function fetch(f, priority, done) {
+        if (f.local.is_downloading_completed) {
+            done(f.local.path)
+            return
+        }
+        const w = _waiters[f.id] || []
+        w.push(done)
+        _waiters[f.id] = w
+        if (w.length === 1)
+            send({ "@type": "downloadFile", file_id: f.id, priority: priority, offset: 0, limit: 0, synchronous: false })
+    }
+
     function file(f) {
+        const w = _waiters[f.id]
+        if (w && f.local.is_downloading_completed) {
+            delete _waiters[f.id]
+            for (const done of w)
+                done(f.local.path)
+        }
         const ids = _fileChats[f.id]
         if (!ids || !f.local.is_downloading_completed)
             return
