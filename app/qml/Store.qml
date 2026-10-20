@@ -36,6 +36,8 @@ QtObject {
     signal readOutbox(var chatId, var lastRead)
     signal chatChanged(var chatId)      // fields of a chat changed (an open chat page reads them again)
     signal fileUpdated(var f)           // a file is coming or going: how far, or done
+    signal messagePinned(var chatId, var id, bool pinned)
+    signal messageInteraction(var chatId, var id, var info)     // views, reactions
 
     // ---- talking to TDLib ----------------------------------------------------
     function send(req, done) {
@@ -133,6 +135,8 @@ QtObject {
         updateMessageEdited: (u) => store.messageEdited(u.chat_id, u.message_id, u.edit_date),
         updateDeleteMessages: (u) => { if (u.is_permanent) store.messagesDeleted(u.chat_id, u.message_ids) },
         updateFile: (u) => store.file(u.file),
+        updateMessageIsPinned: (u) => store.messagePinned(u.chat_id, u.message_id, u.is_pinned),
+        updateMessageInteractionInfo: (u) => store.messageInteraction(u.chat_id, u.message_id, u.interaction_info),
         updateUnreadChatCount: (u) => {
             if (u.chat_list["@type"] === "chatListMain")
                 store.unreadChats = u.unread_unmuted_count
@@ -708,6 +712,59 @@ QtObject {
         send({ "@type": "editMessageText", chat_id: chatId, message_id: messageId,
                input_message_content: { "@type": "inputMessageText",
                                         text: { "@type": "formattedText", text: text } } }, check)
+    }
+
+    function forward(toChat, fromChat, ids, done) {
+        send({ "@type": "forwardMessages", chat_id: toChat, from_chat_id: fromChat, message_ids: ids,
+               send_copy: false, remove_caption: false }, (r) => {
+            check(r)
+            if (done)
+                done(r["@type"] !== "error")
+        })
+    }
+
+    // put a reaction on a message, or take ours off
+    function react(chatId, messageId, emoji, on) {
+        const type = { "@type": "reactionTypeEmoji", emoji: emoji }
+        if (on)
+            send({ "@type": "addMessageReaction", chat_id: chatId, message_id: messageId, reaction_type: type,
+                   is_big: false, update_recent_reactions: true }, check)
+        else
+            send({ "@type": "removeMessageReaction", chat_id: chatId, message_id: messageId, reaction_type: type }, check)
+    }
+
+    function pin(chatId, messageId, on) {
+        if (on)
+            send({ "@type": "pinChatMessage", chat_id: chatId, message_id: messageId, disable_notification: true,
+                   only_for_self: false }, check)
+        else
+            send({ "@type": "unpinChatMessage", chat_id: chatId, message_id: messageId }, check)
+    }
+
+    // who a forwarded message first came from
+    function origin(fi) {
+        if (!fi)
+            return ""
+        const o = fi.origin
+        const t = o["@type"]
+        if (t === "messageOriginUser") {
+            const u = users[o.sender_user_id]
+            return u ? (u.first_name + " " + u.last_name).trim() : "..."
+        }
+        if (t === "messageOriginHiddenUser")
+            return o.sender_name
+        if (t === "messageOriginChat")
+            return chats[o.sender_chat_id] ? chats[o.sender_chat_id].title : "..."
+        if (t === "messageOriginChannel")
+            return chats[o.chat_id] ? chats[o.chat_id].title : "..."
+        return ""
+    }
+
+    // a message's reactions as the bubble shows them: [{ e, n, mine }] (stars and custom emoji as ⭐)
+    function reactions(info) {
+        const list = info && info.reactions ? info.reactions.reactions : []
+        return list.map((r) => ({ e: r.type["@type"] === "reactionTypeEmoji" ? r.type.emoji : "⭐",
+                                  n: r.total_count, mine: r.is_chosen }))
     }
 
     function deleteMessages(chatId, ids, everyone) {

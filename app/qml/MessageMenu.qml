@@ -1,7 +1,8 @@
 // A message's menu the way Telegram-iOS opens it (ContextControllerExtractedPresentationNode.swift,
 // NOTES.md): the chat behind blurs, the bubble is lifted out of it and springs to where its
 // actions fit under it, the actions grow from the bubble with a small overshoot. Everything
-// that moves is an Animator (render thread); the blur is one picture taken as it opens.
+// that moves is an Animator (render thread); the blur is one picture taken as it opens. Over the
+// bubble, the reactions it can get in a capsule (a tap puts one on).
 import QtQuick
 import QtQuick.Effects
 
@@ -17,6 +18,11 @@ Item {
     property bool open: false
     property Item bubble: null
     property var actions: []            // [{ text, glyph, danger, run }]
+    property var reactions: []          // emoji the message can get, over the bubble (iOS's row)
+    property var chosen: []             // the ones already ours on it
+    signal reacted(string emoji)
+    property bool stripOurs: false      // the reactions' row lines up with the bubble's right edge (ours) or left
+    property real stripEdge: 0
 
     readonly property real rowHeight: 46
     readonly property real boxWidth: 240
@@ -24,17 +30,24 @@ Item {
     property real homeY: 0
 
     // the bubble and its actions: lift it out of `item`, put the menu up
-    function show(item, ours, actions) {
+    function show(item, ours, actions, reactions, chosen) {
         if (open)
             return
         bubble = item
         menu.actions = actions
+        menu.reactions = reactions || []
+        menu.chosen = chosen || []
         const at = item.mapToItem(menu, 0, 0)
         homeX = at.x; homeY = at.y
         const h = item.height
         const boxH = actions.length * rowHeight
-        // as low as it is, but with room for the actions under it and under the header
-        const restY = Math.max(ceiling + 8, Math.min(homeY, floor - 16 - boxH - 8 - h))
+        const over = menu.reactions.length ? 56 : 0     // the reactions' row over the bubble
+        // as low as it is, but with room for the actions under it and the reactions and the header over it
+        const restY = Math.max(ceiling + 8 + over, Math.min(homeY, floor - 16 - boxH - 8 - h))
+        strip.y = restY - over
+        stripOurs = ours
+        stripEdge = ours ? Math.min(width - 12, homeX + item.width) : homeX
+        strip.transformOrigin = ours ? Item.BottomRight : Item.BottomLeft
         lifted.x = homeX - 8
         lifted.y = homeY
         box.y = Math.min(restY + h + 8, floor - 16 - boxH)
@@ -61,6 +74,7 @@ Item {
         visible = false
         bubble = null
         actions = []
+        reactions = []
     }
 
     ShaderEffectSource {        // the chat as it was when the menu opened (the bubble left out)
@@ -146,6 +160,57 @@ Item {
         }
     }
 
+    Rectangle {          // the reactions: a tap puts one on (or takes ours off) and closes
+        id: strip
+        visible: menu.reactions.length > 0
+        width: Math.min(menu.width - 24, emojis.implicitWidth + 12); height: 48
+        // (a binding: the row's width is known only after its emoji are laid out)
+        x: menu.stripOurs ? Math.max(12, menu.stripEdge - width) : Math.max(12, Math.min(menu.stripEdge, menu.width - 12 - width))
+        radius: 24
+        color: Theme.menu
+        opacity: 0
+        scale: 0.5
+        clip: true
+        Flickable {
+            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
+            contentWidth: emojis.implicitWidth
+            flickableDirection: Flickable.HorizontalFlick
+            Row {
+                id: emojis
+                Repeater {
+                    model: menu.reactions
+                    Item {
+                        required property string modelData
+                        width: 44; height: 48
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 38; height: 38; radius: 19
+                            color: Theme.accent
+                            opacity: 0.18
+                            visible: menu.chosen.indexOf(parent.modelData) >= 0
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: parent.modelData
+                            font.pixelSize: 27
+                            scale: tapEmoji.pressed ? 1.25 : 1
+                            Behavior on scale { NumberAnimation { duration: 120 } }
+                        }
+                        MouseArea {
+                            id: tapEmoji
+                            anchors.fill: parent
+                            onClicked: {
+                                const e = parent.modelData
+                                menu.close()
+                                menu.reacted(e)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // in: the blur fades in, the bubble springs up (duration 0.42, damping ratio ~0.78: an
     // overshoot of a few percent), the actions grow from it and show in 0.15 s
     ParallelAnimation {
@@ -154,6 +219,8 @@ Item {
         YAnimator { id: liftY; target: lifted; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
         ScaleAnimator { target: box; from: 0.5; to: 1; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
         OpacityAnimator { target: box; from: 0; to: 1; duration: 150 }
+        ScaleAnimator { target: strip; from: 0.5; to: 1; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
+        OpacityAnimator { target: strip; from: 0; to: 1; duration: 150 }
     }
     // out: back where it was, quicker
     ParallelAnimation {
@@ -162,6 +229,7 @@ Item {
         YAnimator { id: dropY; target: lifted; duration: 260; easing.type: Easing.OutCubic }
         ScaleAnimator { target: box; to: 0.6; duration: 180; easing.type: Easing.InQuad }
         OpacityAnimator { target: box; to: 0; duration: 150 }
+        OpacityAnimator { target: strip; to: 0; duration: 150 }
         onFinished: menu.done()
     }
 }

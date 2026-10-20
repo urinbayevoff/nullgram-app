@@ -48,7 +48,17 @@ Page {
     property var quotes: ({})       // message id -> { name, text }, what a reply to it shows
     property var asked: ({})        // quotes asked of TDLib (not among the loaded messages)
 
+    // the newest pinned message, in a bar under the header (a tap goes to it)
+    property var pinned: null           // { id, text }
+    function loadPinned() {
+        store.send({ "@type": "getChatPinnedMessage", chat_id: chatId }, (m) => {
+            if (page)
+                page.pinned = m["@type"] === "message" ? { id: m.id, text: store.preview(m.content) } : null
+        })
+    }
+
     Component.onCompleted: {
+        loadPinned()
         store.send({ "@type": "openChat", chat_id: chatId })
         if (chat && chat.type["@type"] === "chatTypeSupergroup") {   // its update may not have the count
             const g = store.groups["s" + chat.type.supergroup_id]
@@ -422,7 +432,10 @@ Page {
             wave: p.wave, title: p.title, sub: p.sub, anim: p.anim, auto: p.auto,
             got: p.main ? store.progress(p.main) : -1,
             path: p.main && p.main.local.is_downloading_completed ? p.main.local.path : "",
-            jumbo: words !== null && !r ? store.emojiCount(words.trim()) : 0
+            jumbo: words !== null && !r && !m.forward_info ? store.emojiCount(words.trim()) : 0,
+            fwd: store.origin(m.forward_info),
+            reacts: JSON.stringify(store.reactions(m.interaction_info)),
+            isPinned: !!m.is_pinned
         }
     }
 
@@ -577,32 +590,54 @@ Page {
     function openMenu(item) {
         const m = { id: item.msgId, text: item.text, kind: item.kind, out: item.out,
                     name: item.out ? "Siz" : item.sender || (chat ? chat.title : "") }
+        // its properties and the reactions it can get, both asked at once; the menu opens with both
+        let props = null, reactions = null
+        const both = () => { if (props && reactions) page.showMenu(item, m, props, reactions) }
+        store.send({ "@type": "getMessageAvailableReactions", chat_id: chatId, message_id: m.id, row_size: 8 }, (r) => {
+            const list = r["@type"] === "availableReactions" ? r.top_reactions.concat(r.popular_reactions || []) : []
+            reactions = list.filter((a) => a.type["@type"] === "reactionTypeEmoji" && !a.needs_premium)
+                            .map((a) => a.type.emoji).filter((e, i, all) => all.indexOf(e) === i).slice(0, 12)
+            both()
+        })
         store.send({ "@type": "getMessageProperties", chat_id: chatId, message_id: m.id }, (p) => {
-            const ok = p["@type"] === "messageProperties"
-            const acts = []
-            if (ok && p.can_be_replied && !page.channel)
-                acts.push({ text: "Javob berish", glyph: "↩", run: () => page.reply(m) })
-            if (m.text)
-                acts.push({ text: "Nusxa olish", glyph: "⧉", run: () => page.copy(m.text) })
-            if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
-                acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
-            if (page.mains[m.id] && !item.sending)
-                acts.push({ text: "Saqlash", glyph: "↓", run: () => page.save(m.id) })
-            if (ok && p.can_be_deleted_only_for_self && p.can_be_deleted_for_all_users) {
-                acts.push({ text: "Men uchun o'chirish", glyph: "✕", danger: true,
-                            run: () => store.deleteMessages(page.chatId, [m.id], false) })
-                acts.push({ text: "Hamma uchun o'chirish", glyph: "✕", danger: true,
-                            run: () => store.deleteMessages(page.chatId, [m.id], true) })
-            } else if (ok && (p.can_be_deleted_only_for_self || p.can_be_deleted_for_all_users)) {
-                acts.push({ text: "O'chirish", glyph: "✕", danger: true,
-                            run: () => store.deleteMessages(page.chatId, [m.id], p.can_be_deleted_for_all_users) })
-            }
-            const i = page.indexOf(m.id)
-            const it = i >= 0 ? list.itemAtIndex(i) : null
-            if (it && acts.length)
-                menu.show(it.face, m.out, acts)
+            props = p
+            both()
         })
     }
+
+    function showMenu(item, m, p, reactions) {
+        const ok = p["@type"] === "messageProperties"
+        const acts = []
+        if (ok && p.can_be_replied && !page.channel)
+            acts.push({ text: "Javob berish", glyph: "↩", run: () => page.reply(m) })
+        if (m.text)
+            acts.push({ text: "Nusxa olish", glyph: "⧉", run: () => page.copy(m.text) })
+        if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
+            acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
+        if (ok && p.can_be_forwarded)
+            acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; forwardSheet.show() } })
+        if (ok && p.can_be_pinned)
+            acts.push({ text: item.isPinned ? "Qadashni olish" : "Qadash", glyph: "📌",
+                        run: () => store.pin(page.chatId, m.id, !item.isPinned) })
+        if (page.mains[m.id] && !item.sending)
+            acts.push({ text: "Saqlash", glyph: "↓", run: () => page.save(m.id) })
+        if (ok && p.can_be_deleted_only_for_self && p.can_be_deleted_for_all_users) {
+            acts.push({ text: "Men uchun o'chirish", glyph: "✕", danger: true,
+                        run: () => store.deleteMessages(page.chatId, [m.id], false) })
+            acts.push({ text: "Hamma uchun o'chirish", glyph: "✕", danger: true,
+                        run: () => store.deleteMessages(page.chatId, [m.id], true) })
+        } else if (ok && (p.can_be_deleted_only_for_self || p.can_be_deleted_for_all_users)) {
+            acts.push({ text: "O'chirish", glyph: "✕", danger: true,
+                        run: () => store.deleteMessages(page.chatId, [m.id], p.can_be_deleted_for_all_users) })
+        }
+        const i = page.indexOf(m.id)
+        const it = i >= 0 ? list.itemAtIndex(i) : null
+        page.reacting = m.id
+        if (it && acts.length)
+            menu.show(it.face, m.out, acts, reactions, it.reactList.filter((r) => r.mine).map((r) => r.e))
+    }
+    property var forwarding: []         // the messages the forward sheet sends
+    property var reacting: 0            // the message the menu's reactions go on
 
     function reply(m) {
         editing = null
@@ -635,6 +670,10 @@ Page {
     function dismiss() {
         if (sheet.open) {
             sheet.close()
+            return true
+        }
+        if (forwardSheet.open) {
+            forwardSheet.close()
             return true
         }
         if (viewer.open) {
@@ -719,6 +758,23 @@ Page {
                 page.requote(id)
             }
         }
+        function onMessagePinned(chatId, id, on) {
+            if (chatId !== page.chatId)
+                return
+            const i = page.indexOf(id)
+            if (i >= 0)
+                messages.setProperty(i, "isPinned", on)
+            page.loadPinned()
+        }
+        function onMessageInteraction(chatId, id, info) {
+            if (chatId !== page.chatId)
+                return
+            const i = page.indexOf(id)
+            if (i < 0)
+                return
+            messages.setProperty(i, "reacts", JSON.stringify(store.reactions(info)))
+            messages.setProperty(i, "views", info ? info.view_count : 0)
+        }
         function onFileUpdated(f) {
             const ids = page.fileMsgs[f.id]
             if (!ids)
@@ -780,7 +836,7 @@ Page {
             maximumFlickVelocity: 6000
             flickDeceleration: 2200
             header: Item { width: 1; height: input.height + 10 }
-            footer: Item { width: 1; height: bar.height + 8 }
+            footer: Item { width: 1; height: bar.height + pinBar.height + 8 }
             onContentYChanged: {                             // (index 0 is the newest, at the bottom)
                 page.nearTop()
                 page.nearBottom()
@@ -826,6 +882,9 @@ Page {
                 required property real got          // the file coming down or going up: how far, else -1
                 required property string path       // the file, here
                 required property int jumbo         // one to three emoji alone: big, no bubble
+                required property string fwd        // forwarded: who from
+                required property string reacts     // its reactions, JSON: [{ e, n, mine }]
+                required property bool isPinned
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -839,7 +898,9 @@ Page {
                 readonly property real ph: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, aspect)
                                          : Math.max(110, Math.min(360, aspect * wide))
                 readonly property real wide: Math.min(width * 0.72, 270)
-                readonly property bool overlaid: media && text === ""     // the time over the picture
+                readonly property bool overlaid: media && text === "" && !reacted     // the time over the picture
+                readonly property var reactList: reacts ? JSON.parse(reacts) : []
+                readonly property bool reacted: reactList.length > 0
                 Component.onCompleted: {
                     if ((media || rowKind === "file") && !pic)
                         page.loadPic(msgId)
@@ -908,10 +969,12 @@ Page {
                         width: item.jumbo ? Math.max(body.implicitWidth, stamp.implicitWidth + 12) + 8
                              : item.bare ? item.pw : item.media ? item.pw + 6
                              : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
-                                                            attach.visible ? attach.width : 0,
+                                                            attach.visible ? attach.width : 0, fwdText.visible ? fwdText.implicitWidth : 0,
+                                                            item.reacted ? reactRow.implicitWidth + stamp.implicitWidth + 6 : 0,
                                                             stampUnder ? stamp.implicitWidth : body.last + stampRoom) + 24)
                         height: item.jumbo ? body.y + body.height + 26
                               : item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
+                              : item.reacted ? reactRow.y + reactRow.height + 6
                               : body.y + body.height + (stampUnder ? 24 : 8)
 
                         Rectangle {     // while the stretched picture loads
@@ -955,13 +1018,26 @@ Page {
                             color: item.tint
                             font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
                         }
+                        Text {          // forwarded: from whom (Telegram-iOS: two lines in the accent colour)
+                            id: fwdText
+                            visible: item.fwd !== "" && !item.bare
+                            x: 12; y: who.visible ? who.y + who.height + 1 : 7
+                            width: Math.min(implicitWidth, item.most - 24)
+                            elide: Text.ElideRight
+                            text: "Uzatilgan xabar\n" + item.fwd
+                            color: item.out ? Theme.check : Theme.accent
+                            lineHeight: 0.95
+                            font.family: Theme.font; font.pixelSize: 14
+                        }
+                        // the lowest of the name and the forward line: what comes next goes under it
+                        readonly property Item head: fwdText.visible ? fwdText : who
                         Rectangle {     // what it answers: a bar, the name, a line of the text; a tap goes there
                             id: quote
                             visible: item.replyId !== 0
                             readonly property color ink: item.out ? Theme.check : Theme.accent
                             readonly property real wants: Math.max(quoteWho.implicitWidth, Math.min(quoteWhat.implicitWidth, 220)) + 22
                             x: 8
-                            y: who.visible ? who.y + who.height + 4 : 8
+                            y: bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 8
                             width: bubble.width - 16
                             height: visible ? 40 : 0
                             radius: 6
@@ -994,7 +1070,7 @@ Page {
                             id: picture
                             visible: item.media
                             x: item.bare ? 0 : 3
-                            y: item.bare ? 0 : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 4 : 3
+                            y: item.bare ? 0 : quote.visible ? quote.y + quote.height + 4 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 3
                             width: item.pw; height: visible ? item.ph : 0
                             readonly property string corner: item.picKind === "round" ? "-1" : item.bare ? "0" : "14"
                             Image {
@@ -1070,7 +1146,7 @@ Page {
                             id: attach
                             visible: item.rowKind !== ""
                             x: 12
-                            y: quote.visible ? quote.y + quote.height + 6 : who.visible ? who.y + who.height + 4 : 6
+                            y: quote.visible ? quote.y + quote.height + 6 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 6
                             width: item.rowKind === "file" ? fileRow.width : 230
                             height: visible ? 50 : 0
                             AudioRow {
@@ -1103,8 +1179,8 @@ Page {
                             visible: !item.overlaid
                             x: item.jumbo ? 4 : 12
                             y: item.media ? picture.y + picture.height + 5 : attach.visible ? attach.y + attach.height + (text ? 4 : 0)
-                             : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 2 : item.jumbo ? 0 : 8
-                            height: attach.visible && !text ? 0 : implicitHeight
+                             : quote.visible ? quote.y + quote.height + 4 : bubble.head.visible ? bubble.head.y + bubble.head.height + 2 : item.jumbo ? 0 : 8
+                            height: (attach.visible || item.media) && !text ? 0 : implicitHeight
                             width: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, Math.min(implicitWidth, item.most - 24))
                                  : Math.min(implicitWidth, item.most - 24)
                             wrapMode: Text.Wrap
@@ -1114,6 +1190,34 @@ Page {
                             text: (item.kind ? "[" + item.kind + "] " : "") + item.text
                             color: item.out ? Theme.outText : Theme.inText
                             font.family: Theme.font; font.pixelSize: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
+                        }
+                        Row {           // the reactions: emoji and how many, ours lit; a tap puts ours on or off
+                            id: reactRow
+                            visible: item.reacted
+                            x: item.bare ? 0 : 10
+                            y: body.y + body.height + (body.height ? 6 : 4)
+                            height: visible ? 28 : 0
+                            spacing: 4
+                            Repeater {
+                                model: item.reactList
+                                Rectangle {
+                                    required property var modelData
+                                    width: chipText.implicitWidth + 16; height: 28; radius: 14
+                                    readonly property color ink: item.out ? Theme.check : Theme.accent
+                                    color: modelData.mine ? ink : Qt.rgba(ink.r, ink.g, ink.b, 0.15)
+                                    Text {
+                                        id: chipText
+                                        anchors.centerIn: parent
+                                        text: parent.modelData.e + " " + parent.modelData.n
+                                        color: parent.modelData.mine ? (Theme.dark && item.out ? Theme.bubbleOut : "white") : parent.ink
+                                        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: store.react(page.chatId, item.msgId, parent.modelData.e, !parent.modelData.mine)
+                                    }
+                                }
+                            }
                         }
                         Rectangle {     // under the time when it is over a picture
                             visible: item.overlaid || item.jumbo > 0
@@ -1126,7 +1230,7 @@ Page {
                             anchors.right: parent.right; anchors.rightMargin: item.overlaid || item.jumbo ? (item.bare ? 8 : 12) : 10
                             anchors.bottom: parent.bottom; anchors.bottomMargin: item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6
                             textFormat: Text.StyledText
-                            text: (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
+                            text: (item.isPinned ? "📌 " : "") + (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
                                   (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid || item.jumbo ? "white" : Theme.check) + "'>✓</font>") : "")
                             color: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
                             font.family: Theme.font; font.pixelSize: 12
@@ -1238,6 +1342,54 @@ Page {
                 letters: page.chat ? store.letters(page.chat.title) : ""
                 tint: store.tints[Math.abs(page.chatId) % store.tints.length]
                 saved: store.isSaved(page.chat)
+            }
+        }
+
+        Rectangle {          // the pinned message under the header (Telegram-iOS's ChatPinnedMessageTitlePanelNode)
+            id: pinBar
+            z: 3
+            y: bar.height
+            width: parent.width
+            height: page.pinned ? 48 : 0
+            visible: height > 0
+            color: Theme.bar
+            Rectangle { x: 14; y: 9; width: 2.5; height: 30; radius: 1.25; color: Theme.accent }
+            Text {
+                x: 26; y: 6
+                text: "Qadalgan xabar"
+                color: Theme.accent
+                font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+            }
+            Text {
+                x: 26; y: 25
+                width: parent.width - x - 48
+                elide: Text.ElideRight
+                maximumLineCount: 1
+                textFormat: Text.PlainText
+                text: page.pinned ? page.pinned.text.replace(/\s+/g, " ") : ""
+                color: Theme.text
+                font.family: Theme.font; font.pixelSize: 14
+            }
+            Icon {
+                anchors.right: parent.right; anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                width: 20; height: 20
+                name: "pin"
+                color: Theme.grey
+            }
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 0.5; color: Theme.separator }
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {
+                    const id = page.pinned.id
+                    if (page.indexOf(id) >= 0) {
+                        page.jump(id)
+                        page.flashId = id
+                        unflash.restart()
+                    } else {
+                        page.openAt(id, false)
+                    }
+                }
             }
         }
 
@@ -1412,6 +1564,15 @@ Page {
         onSave: if (page.viewing) page.save(page.viewing)
     }
 
+    ForwardSheet {
+        id: forwardSheet
+        store: page.store
+        onPicked: (to, title) => store.forward(to, page.chatId, page.forwarding, (ok) => {
+            if (page && ok)
+                page.toast("Uzatildi: " + title)
+        })
+    }
+
     AttachSheet {
         id: sheet
         onSend: (picked, asFiles) => {
@@ -1530,5 +1691,8 @@ Page {
         behind: content
         ceiling: bar.height
         floor: page.height
+        onReacted: (emoji) => {
+            store.react(page.chatId, page.reacting, emoji, menu.chosen.indexOf(emoji) < 0)
+        }
     }
 }
