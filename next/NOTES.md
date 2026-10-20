@@ -39,6 +39,22 @@ lifted (on touch: bounds + 4 pt each side, refracting, `warpsContentBelow`) or r
 
 **Folders** (IMG_0295): list slides sideways between folders with the tab capsule, ≈ 0.5 s each.
 
+**Context menu** (IMG_0300; TelegramUI/Components/ContextControllerImpl/Sources/
+ContextControllerExtractedPresentationNode.swift, `case .animateIn`): long press → the whole chat
+blurs, the message is lifted out and springs to its menu position, reactions row over it, actions
+under it. Spring: duration 0.42, damping 104 with makeSpringBounceAnimation's mass 5, stiffness 900
+(ζ ≈ 0.78: a small overshoot — seen on the video, the menu grows from the bubble in ≈ 100 ms and
+overshoots a little); content alpha 0→1 in 0.15 s; reaction emojis pop in left to right
+(≈ 170 ms over the row). Finger sliding over the items highlights them; "Edit" puts an "Edit
+Message" bar over the input.
+
+**Sending** (IMG_0299 ≈ 6.0 s; TelegramUI/Sources/ChatMessageTransitionNode.swift): the text leaves
+the field and the new bubble starts exactly where the text was, then goes to its place while the
+list moves up by its height. 0.3 s; x and y on different curves (the path bends): vertical
+bezier(0.19919, 0.01064, 0.27921, 0.91025), horizontal bezier(0.23, 1.0, 0.32, 1.0). Seen on the
+video: in place after ≈ 130 ms. The same video also has the attach sheet ("Recents" gallery from
+the foot), a round video being recorded and the profile opened from the header (media tabs).
+
 ## Qt Quick on the phone (proto.qml / proto.py)
 
 Runs fullscreen under ztmetro (`QT_QPA_PLATFORM=wayland`). `threaded render loop`.
