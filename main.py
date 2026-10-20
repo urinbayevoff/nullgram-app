@@ -92,7 +92,7 @@ class Chats(ztos.Page):
 
 	def __init__(self):
 		super().__init__("chatlar")
-		self.list = self.add(List())
+		self.chat_list = self.add(List())
 		self.rows = {}
 		self.bar(ztos.RoundButton("refresh", "yangilash", self.refresh),
 		         ztos.RoundButton("settings", "sozlamalar", lambda: app.push(Settings())))
@@ -112,9 +112,9 @@ class Chats(ztos.Page):
 		self.busy(False)
 		known = self.rows
 		self.rows = {}
-		self.list.clear()
+		self.chat_list.clear()
 		for c in chats:
-			self.rows[c["id"]] = self.list.add(ChatRow(c, open_chat))
+			self.rows[c["id"]] = self.chat_list.add(ChatRow(c, open_chat))
 		known.clear()
 		update_tile()
 
@@ -136,11 +136,11 @@ class Chats(ztos.Page):
 
 	def _to_top(self, row):
 		# newest under the pinned ones
-		pinned = sum(1 for r in self.list.rows() if r is not row and r.chat.get("pinned"))
+		pinned = sum(1 for r in self.chat_list.rows() if r is not row and r.chat.get("pinned"))
 		if row.chat.get("pinned"):
 			return
-		self.list.box.removeWidget(row)
-		self.list.add(row, pinned)
+		self.chat_list.box.removeWidget(row)
+		self.chat_list.add(row, pinned)
 
 
 class Chat(ztos.Page):
