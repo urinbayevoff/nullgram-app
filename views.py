@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QRegion)
 from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
@@ -24,12 +24,83 @@ FONT_BOLD = ["Segoe WP Bold", "Segoe UI Bold", "Selawik Bold", "Selawik Semibold
 
 # the placeholders' colours (its App.xaml), picked by the id
 PLACEHOLDERS = [0x0050ef, 0x00bcd4, 0x00aa08, 0xf0a30a, 0xf472d0, 0xaa00ff, 0xfa6800, 0xfbc02d]
-# messages (its MessageControl.xaml, dark theme)
-THEIRS, THEIRS_TEXT, THEIRS_SUBTLE = QColor("#ffffff"), QColor("#000000"), QColor("#93989d")
-OURS, OURS_TEXT, OURS_SUBTLE = QColor("#2b2b2b"), QColor("#ffffff"), QColor("#a0a0a0")
+# chat themes: the first is Telegram for WP's dark one (its MessageControl.xaml: square
+# boxes on black); the others are as other Telegrams have them, a wallpaper of four
+# colours blended ("freeform", fixed to the screen, the messages float over it) and
+# round bubbles. theirs, ours, a channel's card: (fill, text, small text)
+THEMES = [
+	{"id": "qora", "name": "qora", "wall": None, "round": 0,
+	 "theirs": ("#ffffff", "#000000", "#93989d"), "ours": ("#2b2b2b", "#ffffff", "#a0a0a0"),
+	 "card": ("#1f1f1f", "#ffffff", "#a0a0a0")},
+	{"id": "tun", "name": "tun", "wall": ("#0e1621", "#13202e", "#0c141d", "#112030"), "round": 12,
+	 "theirs": ("#182533", "#ffffff", "#6d7f8f"), "ours": ("#2b5278", "#ffffff", "#7da8d3")},
+	{"id": "binafsha", "name": "binafsha", "wall": ("#2a1650", "#47226e", "#1c1440", "#3a1d63"), "round": 12,
+	 "theirs": ("#2a2142", "#ffffff", "#8e84a8"), "ours": ("#6b3fb8", "#ffffff", "#c9b3ef")},
+	{"id": "okean", "name": "okean", "wall": ("#0b3a52", "#0f5e6e", "#08304a", "#136b78"), "round": 12,
+	 "theirs": ("#17323f", "#ffffff", "#7b97a3"), "ours": ("#1d7584", "#ffffff", "#a5dbe3")},
+	{"id": "shaftoli", "name": "shaftoli", "wall": ("#fec496", "#dd6cb9", "#962fbf", "#4f5bd5"), "round": 12,
+	 "theirs": ("#ffffff", "#000000", "#a1aab3"), "ours": ("#ffe6f4", "#000000", "#c27aa5")},
+	{"id": "yashil", "name": "kunduzgi yashil", "wall": ("#dbddbb", "#6ba587", "#d5d88d", "#88b884"), "round": 12,
+	 "theirs": ("#ffffff", "#000000", "#a1aab3"), "ours": ("#effedd", "#000000", "#5fae6f")},
+]
+THEME = THEMES[0]
 WEEK = ["du", "se", "ch", "pa", "ju", "sh", "ya"]
 MONTHS = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr",
           "noyabr", "dekabr"]
+
+
+def set_theme(theme_id: str):
+	global THEME
+	THEME = next((t for t in THEMES if t["id"] == theme_id), THEMES[0])
+
+
+def colors(which: str, theme: dict = None) -> tuple:
+	"""A theme's (fill, text, small text) for "theirs", "ours" or "card" as QColors."""
+	t = theme or THEME
+	return tuple(QColor(c) for c in t.get(which) or t["theirs"])
+
+
+# where the four colours are (Telegram's freeform gradient: the first of each pair it turns between)
+_WALL_AT = ((0.80, 0.10), (0.35, 0.25), (0.20, 0.90), (0.65, 0.75))
+_walls = {}
+
+
+def wallpaper(wall: tuple, w: int = 60, h: int = 126) -> QImage:
+	"""The four colours blended by nearness, small (it is smooth: drawn large it stays smooth)."""
+	key = (wall, w, h)
+	if key not in _walls:
+		cols = [QColor(c) for c in wall]
+		rgb = [(c.red(), c.green(), c.blue()) for c in cols]
+		img = QImage(w, h, QImage.Format_RGB32)
+		for y in range(h):
+			v = y / max(1, h - 1)
+			for x in range(w):
+				u = x / max(1, w - 1)
+				ws = [max(0.0, 0.9 - ((u - px) ** 2 + (v - py) ** 2) ** 0.5) ** 4 for px, py in _WALL_AT]
+				total = sum(ws) or 1.0
+				r = sum(k * c[0] for k, c in zip(ws, rgb)) / total
+				g = sum(k * c[1] for k, c in zip(ws, rgb)) / total
+				b = sum(k * c[2] for k, c in zip(ws, rgb)) / total
+				img.setPixel(x, y, 0xff000000 | (int(r) << 16) | (int(g) << 8) | int(b))
+		_walls[key] = img
+	return _walls[key]
+
+
+def bubble_path(rect: QRectF, r: float, small: str) -> QPainterPath:
+	"""A box with round corners, the one at `small` ("tl", "tr" or "") less round (where its tail would be)."""
+	rad = {k: (3.0 if k == small else r) for k in ("tl", "tr", "br", "bl")}
+	x0, y0, x1, y1 = rect.left(), rect.top(), rect.right(), rect.bottom()
+	path = QPainterPath(QPointF(x0 + rad["tl"], y0))
+	path.lineTo(x1 - rad["tr"], y0)
+	path.arcTo(QRectF(x1 - 2 * rad["tr"], y0, 2 * rad["tr"], 2 * rad["tr"]), 90, -90)
+	path.lineTo(x1, y1 - rad["br"])
+	path.arcTo(QRectF(x1 - 2 * rad["br"], y1 - 2 * rad["br"], 2 * rad["br"], 2 * rad["br"]), 0, -90)
+	path.lineTo(x0 + rad["bl"], y1)
+	path.arcTo(QRectF(x0, y1 - 2 * rad["bl"], 2 * rad["bl"], 2 * rad["bl"]), 270, -90)
+	path.lineTo(x0, y0 + rad["tl"])
+	path.arcTo(QRectF(x0, y0, 2 * rad["tl"], 2 * rad["tl"]), 180, -90)
+	path.closeSubpath()
+	return path
 
 
 def when(stamp: float) -> str:
@@ -266,7 +337,8 @@ class ContactRow(_Pressable):
 class Bubble(Cached):
 	"""One message: a square box, theirs white with a small corner at the top
 	left (in a group with the sender's avatar beside it), ours dark grey with
-	the corner at the top right; a channel's post a card across the page."""
+	the corner at the top right; a channel's post a card across the page. In
+	a round theme (THEME["round"]) the box is round, the corner a less round one."""
 	PAD, CORNER, GAP = 9.0, 9.0, 6.0
 	AV = 34.0
 
@@ -296,10 +368,11 @@ class Bubble(Cached):
 		return self.kind == "group" and not self.msg.get("out")
 
 	def _layout(self):
+		self.side = 0.0 if THEME["round"] else self.CORNER		# room for the corner
 		if self._card():
 			self.max_w = PAGE_W
 		else:
-			self.max_w = min(251.0, PAGE_W - self.CORNER - (self.AV + 6 if self._avatar() else 0))
+			self.max_w = min(251.0 + self.CORNER - self.side, PAGE_W - self.side - (self.AV + 6 if self._avatar() else 0))
 		inner = self.max_w - 2 * self.PAD
 		fm = QFontMetricsF(_font(FONT_REGULAR, 16))
 		self.text_rect = fm.boundingRect(QRectF(0, 0, inner, 100000), Qt.TextWordWrap, self._text())
@@ -329,39 +402,39 @@ class Bubble(Cached):
 	def draw(self, p: QPainter):
 		m, w = self.msg, self.width()
 		out, card = bool(m.get("out")), self._card()
-		if card:
-			fill, ink, subtle = CHROME, OURS_TEXT, OURS_SUBTLE
-		elif out:
-			fill, ink, subtle = OURS, OURS_TEXT, OURS_SUBTLE
-		else:
-			fill, ink, subtle = THEIRS, THEIRS_TEXT, THEIRS_SUBTLE
+		fill, ink, subtle = colors("card" if card else "ours" if out else "theirs")
 		if m.get("pending"):
-			fill = QColor(fill)
 			fill.setAlphaF(0.6)
-		y = 0.0
+		y, r = 0.0, THEME["round"]
 		if card:
 			x = 0.0
 		elif out:
-			x = w - self.CORNER - self.box_w
-			corner = QPainterPath(QPointF(x + self.box_w, y + self.CORNER))
-			corner.lineTo(x + self.box_w + self.CORNER, y + self.CORNER)
-			corner.lineTo(x + self.box_w, y + 2 * self.CORNER)
-			corner.closeSubpath()
+			x = w - self.side - self.box_w
 		else:
-			x = self.CORNER + (self.AV + 6 if self._avatar() else 0)
-			corner = QPainterPath(QPointF(x, y + self.CORNER))
-			corner.lineTo(x - self.CORNER, y + self.CORNER)
-			corner.lineTo(x, y + 2 * self.CORNER)
-			corner.closeSubpath()
+			x = self.side + (self.AV + 6 if self._avatar() else 0)
 		if self._avatar():
 			draw_avatar(p, 0, y, self.AV, m.get("sender_id", 0), m.get("sender", ""), 14)
-		p.fillRect(QRectF(x, y, self.box_w, self.box_h), fill)
-		if not card:
-			p.fillPath(corner, fill)
+		box = QRectF(x, y, self.box_w, self.box_h)
+		if r:
+			p.fillPath(bubble_path(box, r, "" if card else "tr" if out else "tl"), fill)
+		else:
+			p.fillRect(box, fill)
+			if not card:
+				if out:
+					corner = QPainterPath(QPointF(x + self.box_w, y + self.CORNER))
+					corner.lineTo(x + self.box_w + self.CORNER, y + self.CORNER)
+					corner.lineTo(x + self.box_w, y + 2 * self.CORNER)
+				else:
+					corner = QPainterPath(QPointF(x, y + self.CORNER))
+					corner.lineTo(x - self.CORNER, y + self.CORNER)
+					corner.lineTo(x, y + 2 * self.CORNER)
+				corner.closeSubpath()
+				p.fillPath(corner, fill)
 
 		ty = y + self.PAD
 		if self.name_h:
-			p.setPen(tile_color(m.get("sender_id", 0)))
+			name = tile_color(m.get("sender_id", 0))
+			p.setPen(name.lighter(150) if fill.lightness() < 128 else name)
 			p.setFont(_font(FONT_SEMIBOLD, 14))
 			fm = QFontMetricsF(p.font())
 			p.drawText(QPointF(x + self.PAD, ty + fm.ascent() - 2),
@@ -387,8 +460,16 @@ class DayLabel(Cached):
 		self.setFixedHeight(34)
 
 	def draw(self, p: QPainter):
-		p.setPen(GREY)
 		p.setFont(_font(FONT_SEMIBOLD, 13))
+		if THEME["wall"]:	# a pill that reads on any wallpaper
+			w = QFontMetricsF(p.font()).horizontalAdvance(self.text) + 20
+			pill = QRectF((self.width() - w) / 2, 6, w, 22)
+			p.setPen(Qt.NoPen)
+			p.setBrush(QColor(0, 0, 0, 80))
+			p.drawRoundedRect(pill, 11, 11)
+			p.setPen(QColor("white"))
+		else:
+			p.setPen(GREY)
 		p.drawText(QRectF(0, 4, self.width(), 26), Qt.AlignHCenter | Qt.AlignVCenter, self.text)
 
 
@@ -401,11 +482,57 @@ class UnreadLabel(Cached):
 		self.setFixedHeight(36)
 
 	def draw(self, p: QPainter):
-		p.fillRect(QRectF(0, 6, self.width(), 24), CHROME)
-		p.setPen(ztos.accent())
+		p.fillRect(QRectF(0, 6, self.width(), 24), QColor(0, 0, 0, 110) if THEME["wall"] else CHROME)
+		p.setPen(ztos.accent().lighter(130) if THEME["wall"] else ztos.accent())
 		p.setFont(_font(FONT_SEMIBOLD, 13))
 		p.drawText(QRectF(0, 6, self.width(), 24), Qt.AlignCenter,
 		           f"{self.count} ta o'qilmagan xabar" if self.count else "o'qilmagan xabarlar")
+
+
+class ThemeRow(_Pressable):
+	"""A chat theme to pick: a small picture of a chat in it, and its name."""
+	H = 98
+
+	def __init__(self, theme: dict, on_tap):
+		super().__init__()
+		self.theme = theme
+		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		self.setFixedHeight(self.H)
+		self.tapped.connect(lambda: on_tap(self.theme))
+
+	def draw(self, p: QPainter):
+		t = self.theme
+		p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing | QPainter.SmoothPixmapTransform)
+		pic = QRectF(0, 8, 64, self.H - 16)
+		frame = QPainterPath()
+		frame.addRoundedRect(pic, 8, 8)
+		p.save()
+		p.setClipPath(frame)
+		if t["wall"]:
+			p.drawImage(pic, wallpaper(t["wall"], 24, 40))
+		else:
+			p.fillRect(pic, QColor("black"))
+		r = t["round"]
+		for which, x, y, w in (("theirs", 6, 18, 38), ("ours", 20, 42, 38), ("theirs", 6, 62, 30)):
+			fill = colors(which, t)[0]
+			box = QRectF(pic.left() + x, pic.top() + y - 8, w, 16)
+			if r:
+				p.fillPath(bubble_path(box, 6, "tr" if which == "ours" else "tl"), fill)
+			else:
+				p.fillRect(box, fill)
+		p.restore()
+		p.setPen(QPen(QColor(255, 255, 255, 60), 1))
+		p.setBrush(Qt.NoBrush)
+		p.drawPath(frame)
+		x = pic.right() + 16
+		on = t is THEME
+		p.setPen(QColor("white"))
+		p.setFont(_font(FONT_SEMILIGHT, 25))
+		p.drawText(QPointF(x, self.H / 2 + 4), t["name"])
+		p.setFont(_font(FONT_REGULAR, 14))
+		p.setPen(ztos.accent() if on else GREY)
+		p.drawText(QPointF(x, self.H / 2 + 26), "tanlangan" if on else "Windows Phone" if not t["wall"] else
+		           "yumaloq pufakchalar, rangli fon")
 
 
 class QrView(QWidget):
@@ -468,6 +595,40 @@ class TiledPage(ztos.Page):
 		self._small = {}
 		self._blur = {}
 		self.glass_gen = 0
+		# a chat theme's wallpaper, fixed behind the list (see set_wallpaper)
+		self.wallpaper = None
+		self._wall = self._wall_key = None
+		self._wall_gen = self._wall_up = 0
+
+	def set_wallpaper(self, wall):
+		"""Four colours (views.THEMES) blended behind the list, which is see-through over them."""
+		self.wallpaper = wall
+		if wall:
+			self.body.setStyleSheet("#ztosBody { background: transparent; }")
+			self.viewport.installEventFilter(self)
+
+	def wall_image(self) -> QImage:
+		"""The wallpaper as large as the viewport, a pixel a point (drawn larger it stays smooth)."""
+		size = self.viewport.size()
+		key = (self.wallpaper, size.width(), size.height())
+		if self._wall_key != key:
+			self._wall = wallpaper(self.wallpaper).scaled(max(1, size.width()), max(1, size.height()),
+			                                              Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+			self._wall_key = key
+			self._wall_gen += 1
+		return self._wall
+
+	def eventFilter(self, obj, event):
+		if obj is self.viewport and self.wallpaper and event.type() == QEvent.Paint:
+			p = QPainter(self.viewport)
+			p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+			p.drawImage(QRectF(self.viewport.rect()), self.wall_image())
+			p.end()
+			return True
+		return super().eventFilter(obj, event)
+
+	def _clear(self) -> QColor:
+		return QColor(Qt.transparent) if self.wallpaper else QColor("black")
 
 	def _key(self, i: int):
 		return (id(self), "tile", i)
@@ -498,7 +659,7 @@ class TiledPage(ztos.Page):
 		small = self._small[i]
 		w, h, m = small.width(), small.height(), self.BLUR_MARGIN
 		col = QImage(w, h + 2 * m, QImage.Format_RGBA8888_Premultiplied)
-		col.fill(QColor("black"))
+		col.fill(self._clear())
 		p = QPainter(col)
 		above, below = self._small.get(i - 1), self._small.get(i + 1)
 		if above is not None:
@@ -566,7 +727,7 @@ class TiledPage(ztos.Page):
 		# (in the layer's own format: the upload then does not convert it)
 		image = QImage(max(1, round(w * ratio)), round(h * ratio), QImage.Format_RGBA8888_Premultiplied)
 		image.setDevicePixelRatio(ratio)
-		image.fill(QColor("black"))
+		image.fill(self._clear())
 		self._quiet = True
 		ztos._drawing_pictures += 1
 		try:
@@ -645,6 +806,11 @@ class TiledPage(ztos.Page):
 			bar.gpu_where(self)
 		self._gl_on = True
 		ztos._solid(layer, ("sys", "black"), QColor("black"))
+		if self.wallpaper:
+			self.wall_image()
+			if self._wall_up != self._wall_gen or not layer.has((id(self), "wall")):
+				layer.upload((id(self), "wall"), self._wall)
+				self._wall_up = self._wall_gen
 		at = self.viewport.mapTo(self.window(), QPoint(0, 0))
 		self._gl_ox, self._gl_oy = float(at.x()), float(at.y())
 		# the widgets stay where they are under the layer (not moved, so not
@@ -660,6 +826,8 @@ class TiledPage(ztos.Page):
 		quads = [Quad.rect(("sys", "black"), ztos._WHOLE, self._gl_ox, self._gl_oy, w, view)]
 		if layer is None:
 			return quads
+		if self.wallpaper and layer.has((id(self), "wall")):
+			quads.append(Quad.rect((id(self), "wall"), ztos._WHOLE, self._gl_ox, self._gl_oy, w, view))
 		for i in self._view_tiles(s):
 			th = self._tile_h.get(i)
 			if not th or not layer.has(self._key(i)):

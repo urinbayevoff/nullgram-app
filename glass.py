@@ -27,8 +27,17 @@ TINT = QColor(40, 40, 44, 110)		# the panel's dark grey (Telegram's 0.11 white o
 LENS = QColor(255, 255, 255, 28)		# under the selected tab
 LENS_PRESSED = QColor(255, 255, 255, 54)
 STEP = 0.5				# a strip's height, points (drawn on the CPU)
-BANDS = 14				# trapezoids a shape is cut into (drawn on the GPU)
+BANDS = 14				# trapezoids a round end is cut into at most (drawn on the GPU; fewer for small ones)
 BEND = 0.45				# how much further out the rim takes what it shows
+
+
+def halo_text(p: QPainter, rect: QRectF, flags, text: str, color: QColor):
+	"""Text with a soft dark ring round it, so it reads over a white bubble seen through the glass too."""
+	p.setPen(QColor(0, 0, 0, 70))
+	for dx, dy in ((0, 1), (0, -0.8), (0.9, 0), (-0.9, 0), (0, 1.6)):
+		p.drawText(rect.translated(dx, dy), flags, text)
+	p.setPen(color)
+	p.drawText(rect, flags, text)
 
 
 def icon(p: QPainter, name: str, cx: float, cy: float, size: float, color: QColor, filled: bool = False):
@@ -84,6 +93,10 @@ def icon(p: QPainter, name: str, cx: float, cy: float, size: float, color: QColo
 		path.moveTo(-s * 0.62, s * 0.15)
 		path.lineTo(0, s * 0.8)
 		path.lineTo(s * 0.62, s * 0.15)
+	elif name == "back":		# a chevron to the left
+		path.moveTo(s * 0.3, -s * 0.8)
+		path.lineTo(-s * 0.45, 0)
+		path.lineTo(s * 0.3, s * 0.8)
 	elif name == "refresh":
 		r = QRectF(-s * 0.75, -s * 0.75, s * 1.5, s * 1.5)
 		path.arcMoveTo(r, 70)
@@ -91,35 +104,40 @@ def icon(p: QPainter, name: str, cx: float, cy: float, size: float, color: QColo
 		path.moveTo(s * 0.05, -s * 1.0)
 		path.lineTo(s * 0.32, -s * 0.72)
 		path.lineTo(s * 0.02, -s * 0.45)
-	if name in ("search", "up", "down", "refresh"):
+	if name in ("search", "up", "down", "refresh", "back"):
 		p.setBrush(Qt.NoBrush)
 	p.drawPath(path)
 	p.restore()
 
 
 class GlassBar(QWidget):
-	"""Shapes along the foot of `host` (a page, or a pivot of pages), over its
-	list. `parts` from left to right:
+	"""Shapes along the foot (or, `at="top"`, the head) of `host` (a page, or a
+	pivot of pages), over its list. `parts` from left to right:
 	  ("tabs", [(icon, word, on_tap), ...])   a capsule of tabs, one selected
 	  ("circle", icon, on_tap[, lit])         a round button (filled with the accent while lit())
 	  ("field", ztos.TextBox)                 a capsule to write in
+	  ("title", lines)                        a capsule as wide as lines() -> (title, under it, lit)
+	  ("avatar", paint)                       a circle paint(p, rect) draws a picture in
 	  ("space",)                              room between them
-	tabs, field and space share what is left of the width.
+	tabs, field and space share what is left of the width; restyle() when
+	what a title or an avatar shows has changed.
 
 	The bar is a strip across the whole foot and paints all of it (outside
 	the shapes, the list itself as it is there): so nothing under it repaints
 	when it does (a cursor blinking, a tab pressed), which would count as a
 	change of the list."""
-	FOOT = 8.0		# under the shapes
+	FOOT = 8.0		# under the shapes (at the foot), over them (at the head)
 	SIDE = 12.0
 	GAP = 8.0
 	INSET = 4.0
 
-	def __init__(self, host: QWidget, parts: list, height: float = 64.0, page=None):
+	def __init__(self, host: QWidget, parts: list, height: float = 64.0, page=None, at: str = "foot"):
 		super().__init__(host)
 		self.host = host
 		self.parts = list(parts)
 		self.h = height
+		self.top = at == "top"
+		self.pad = self.FOOT if self.top else 0.0		# above the shapes
 		self.page_of = page or (lambda: host)		# the TiledPage under it now
 		self.selected = 0
 		self.pressed = None		# (part index, tab index)
@@ -130,6 +148,7 @@ class GlassBar(QWidget):
 		self._over_key = None
 		self._over_gen = 0
 		self._gpu_key = None
+		self._under_key = None
 		self._still_key = None
 		self._bands = None
 		self._gl_at = None
@@ -143,8 +162,8 @@ class GlassBar(QWidget):
 
 	# where it is
 	def space(self) -> int:
-		"""What the list keeps free at its foot, to come out from under the bar."""
-		return int(self.h + self.FOOT + 10)
+		"""What the list keeps free at its foot (head), to come out from under the bar."""
+		return int(self.h + self.FOOT + (6 if self.top else 10))
 
 	def eventFilter(self, obj, event):
 		if obj is self.host and event.type() == QEvent.Resize:
@@ -153,27 +172,38 @@ class GlassBar(QWidget):
 
 	def _place(self):
 		hh = int(math.ceil(self.h + self.FOOT))
-		self.setGeometry(0, self.host.height() - hh, self.host.width(), hh)
+		self.setGeometry(0, 0 if self.top else self.host.height() - hh, self.host.width(), hh)
 		self._layout()
 		self.raise_()
 
 	def _layout(self):
 		w = float(self.width())
-		fixed = sum(self.h for p in self.parts if p[0] == "circle")
-		flex = [p for p in self.parts if p[0] in ("tabs", "field", "space")]
+		fixed = sum(self.h for p in self.parts if p[0] in ("circle", "avatar"))
 		room = w - 2 * self.SIDE - fixed - self.GAP * (len(self.parts) - 1)
-		x = self.SIDE
+		titles = [p for p in self.parts if p[0] == "title"]
+		natural = {id(p): min(room / len(titles), self._title_w(p)) for p in titles}
+		flex = [p for p in self.parts if p[0] in ("tabs", "field", "space")]
+		room -= sum(natural.values())
+		x, y = self.SIDE, self.pad
 		self.shapes = []		# (part index, rect, radius)
 		for i, part in enumerate(self.parts):
-			pw = self.h if part[0] == "circle" else room / max(1, len(flex))
-			if part[0] != "space":
-				self.shapes.append((i, QRectF(x, 0, pw, self.h), self.h / 2))
-				if part[0] == "field":
-					part[1].setGeometry(QRect(round(x + 6), round((self.h - 40) / 2), round(pw - 12), 40))
+			kind = part[0]
+			pw = self.h if kind in ("circle", "avatar") else natural[id(part)] if kind == "title" \
+				else room / max(1, len(flex))
+			if kind != "space":
+				self.shapes.append((i, QRectF(x, y, pw, self.h), self.h / 2))
+				if kind == "field":
+					part[1].setGeometry(QRect(round(x + 6), round(y + (self.h - 40) / 2), round(pw - 12), 40))
 			x += pw + self.GAP
 		self._bands = None
 		self._over = None
 		self.update()
+
+	def _title_w(self, part) -> float:
+		title, under, _ = part[1]()
+		w = max(QFontMetricsF(_font(FONT_SEMIBOLD, 16)).horizontalAdvance(title),
+		        QFontMetricsF(_font(FONT_REGULAR, 12)).horizontalAdvance(under))
+		return max(self.h * 2.5, w + 2 * 18)
 
 	def _own_field(self, box):
 		box.setParent(self)
@@ -190,6 +220,12 @@ class GlassBar(QWidget):
 		self._over = None
 		self.update()
 
+	def restyle(self):
+		"""What a title or an avatar shows has changed (a title's width with it)."""
+		if any(p[0] == "title" for p in self.parts):
+			self._layout()
+		self._restyle()
+
 	def select(self, i: int):
 		if i != self.selected:
 			self.selected = i
@@ -197,10 +233,11 @@ class GlassBar(QWidget):
 
 	# the bands
 	def bands(self) -> list:
-		"""Each shape cut across into BANDS trapezoids, evenly by the angle
-		round its ends (thin where the rim turns fast): (y0, y1, left and
-		right at y0, at y1; whence: x0, x1, y0, y1). The whence is further out
-		near the rim: the bend."""
+		"""Each shape cut across into trapezoids (BANDS for a large one, down to
+		8 for a small one: a quad costs the frame), evenly by the angle round
+		its ends (thin where the rim turns fast): (y0, y1, left and right at y0,
+		at y1; whence: x0, x1, y0, y1). The whence is further out near the rim:
+		the bend."""
 		if self._bands is None:
 			out = []
 			for _, rect, r in self.shapes:
@@ -215,7 +252,8 @@ class GlassBar(QWidget):
 					d = (y - cy) / r
 					return cy + (y - cy) * (1 + BEND * d ** 4)
 
-				ys = [cy - r * math.cos(math.pi * k / BANDS) for k in range(BANDS + 1)]
+				n = max(8, min(BANDS, round(r / 2.3)))
+				ys = [cy - r * math.cos(math.pi * k / n) for k in range(n + 1)]
 				for y0, y1 in zip(ys, ys[1:]):
 					l0, r0 = at(y0)
 					l1, r1 = at(y1)
@@ -299,6 +337,26 @@ class GlassBar(QWidget):
 					           else LENS_PRESSED)
 					p.drawEllipse(rect.adjusted(3, 3, -3, -3))
 				icon(p, part[1], rect.center().x(), rect.center().y(), self.h * 0.42, QColor("white"))
+			elif part[0] == "title":
+				self._paint_title(p, part, rect)
+			elif part[0] == "avatar":
+				part[1](p, rect.adjusted(3, 3, -3, -3))
+
+	def _paint_title(self, p: QPainter, part, rect: QRectF):
+		title, under, lit = part[1]()
+		inner = rect.adjusted(14, 0, -14, 0)
+		f1, f2 = _font(FONT_SEMIBOLD, 16), _font(FONT_REGULAR, 12)
+		m1, m2 = QFontMetricsF(f1), QFontMetricsF(f2)
+		h = m1.height() + (m2.height() - 2 if under else 0)
+		y = rect.center().y() - h / 2
+		p.setFont(f1)
+		halo_text(p, QRectF(inner.left(), y, inner.width(), m1.height()), Qt.AlignHCenter | Qt.AlignVCenter,
+		          m1.elidedText(title, Qt.ElideRight, inner.width()), QColor("white"))
+		if under:
+			p.setFont(f2)
+			halo_text(p, QRectF(inner.left(), y + m1.height() - 2, inner.width(), m2.height()),
+			          Qt.AlignHCenter | Qt.AlignVCenter, m2.elidedText(under, Qt.ElideRight, inner.width()),
+			          ztos.accent().lighter(125) if lit else QColor(255, 255, 255, 175))
 
 	def _tab_rects(self, rect: QRectF, n: int) -> list:
 		inner = rect.adjusted(self.INSET, self.INSET, -self.INSET, -self.INSET)
@@ -326,7 +384,8 @@ class GlassBar(QWidget):
 		"""The shapes' tint, rims and icons at the screen's resolution, transparent around them."""
 		ratio = self.devicePixelRatioF()
 		lit = tuple(bool(p[3]()) for p in self.parts if p[0] == "circle" and len(p) > 3)
-		key = (self.size(), ratio, self.selected, self.pressed, lit)
+		titles = tuple(p[1]() for p in self.parts if p[0] == "title")
+		key = (self.size(), ratio, self.selected, self.pressed, lit, titles)
 		if self._over is None or self._over_key != key:
 			img = QImage(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)),
 			             QImage.Format_RGBA8888_Premultiplied)
@@ -371,10 +430,13 @@ class GlassBar(QWidget):
 			img.setDevicePixelRatio(ratio)
 			img.fill(Qt.transparent)
 		p = QPainter(img)
+		wall = getattr(page, "wallpaper", None)
 		if opaque and hasattr(page, "body"):
 			# the list as it is under the strip, sharp (its paints are ours, not changes of it)
 			o = self._offset(page)
 			top = round(o.y() + scroll)
+			if wall:
+				self._paint_wall(p, page)
 			ztos._drawing_pictures += 1
 			try:
 				page.body.render(p, QPoint(0, 0), QRegion(round(o.x()), top, self.width(), self.height()),
@@ -382,19 +444,48 @@ class GlassBar(QWidget):
 			finally:
 				ztos._drawing_pictures -= 1
 		if hasattr(page, "_blur"):
-			if opaque:
-				# under the shapes only the blur
-				clip = QPainterPath()
-				for _, rect, r in self.shapes:
-					clip.addRoundedRect(rect, r, r)
+			if opaque or wall:
+				# under the shapes only the blur (over the wallpaper, if there is one)
 				p.save()
-				p.setClipPath(clip)
-				p.fillRect(self.rect(), QColor("black"))
+				p.setClipPath(self._outline())
+				if wall:
+					self._paint_wall(p, page)
+				else:
+					p.fillRect(self.rect(), QColor("black"))
 				p.restore()
 			self._paint_strips(p, page, scroll)
 		p.drawImage(QPointF(0, 0), self._overlay())
 		if children:
 			self._children(p)
+		p.end()
+		return img
+
+	def _outline(self) -> QPainterPath:
+		path = QPainterPath()
+		for _, rect, r in self.shapes:
+			path.addRoundedRect(rect, r, r)
+		return path
+
+	def _paint_wall(self, p: QPainter, page):
+		"""The page's wallpaper as it is behind the bar (fixed: the list moves, it does not)."""
+		o = self._offset(page)
+		p.save()
+		p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+		p.drawImage(QRectF(0, 0, self.width(), self.height()), page.wall_image(),
+		            QRectF(o.x(), o.y(), self.width(), self.height()))
+		p.restore()
+
+	def _under(self, page) -> QImage:
+		"""The wallpaper inside the shapes, transparent round them: under the blur while the list moves."""
+		ratio = self.devicePixelRatioF()
+		img = QImage(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)),
+		             QImage.Format_RGBA8888_Premultiplied)
+		img.setDevicePixelRatio(ratio)
+		img.fill(Qt.transparent)
+		p = QPainter(img)
+		p.setRenderHint(QPainter.Antialiasing, True)
+		p.setClipPath(self._outline())
+		self._paint_wall(p, page)
 		p.end()
 		return img
 
@@ -414,8 +505,19 @@ class GlassBar(QWidget):
 		layer.upload((id(self), "over"), img)
 		self._gpu_key = key
 
+	def _gpu_under(self, page, layer):
+		if not getattr(page, "wallpaper", None):
+			return
+		page.wall_image()
+		key = (id(page), page._wall_gen, self.size(), self.devicePixelRatioF(), self.pos())
+		if self._under_key != key or not layer.has((id(self), "under")):
+			layer.upload((id(self), "under"), self._under(page))
+			self._under_key = key
+
 	def gpu_where(self, page):
-		"""Where it is in the window and on the page's list: worked out once a motion."""
+		"""Where it is in the window and on the page's list: worked out once a motion
+		(and the wallpaper under its shapes on the GPU, if the page has one)."""
+		self._gpu_under(page, ztos._layer_of(page))
 		at = self.mapTo(self.window(), QPoint(0, 0))
 		self._gl_at = (float(at.x()), float(at.y()), self._offset(page))
 
@@ -427,6 +529,8 @@ class GlassBar(QWidget):
 		quads = []
 		has = layer.has
 		pid = id(page)
+		if getattr(page, "wallpaper", None) and has((id(self), "under")):
+			quads.append(Quad.rect((id(self), "under"), ztos._WHOLE, ox, oy, float(self.width()), float(self.height())))
 		for j, y0, y1, l0, r0, l1, r1, u0, u1, v0, v1 in self._pieces(page, scroll, o):
 			key = (pid, "blur", j)
 			if has(key):

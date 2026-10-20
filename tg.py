@@ -31,6 +31,7 @@ if os.path.isdir(VENDOR) and VENDOR not in sys.path:
 	sys.path.insert(0, VENDOR)
 
 from telethon import TelegramClient, events, utils  # noqa: E402
+from telethon.tl import types  # noqa: E402
 from telethon.errors import (FloodWaitError, PhoneCodeExpiredError, PhoneCodeInvalidError,  # noqa: E402
                              PasswordHashInvalidError, PhoneNumberInvalidError, SessionPasswordNeededError)
 
@@ -80,6 +81,40 @@ def avatar_path(chat_id: int, photo: int) -> str:
 	return os.path.join(AVATARS, f"{chat_id}_{photo}.jpg")
 
 
+def seen(status) -> str:
+	"""A user's status as the header says it."""
+	if isinstance(status, types.UserStatusOnline):
+		return "onlayn"
+	if isinstance(status, types.UserStatusOffline) and status.was_online:
+		d, now = status.was_online.astimezone(), datetime.now().astimezone()
+		days = (now.date() - d.date()).days
+		at = d.strftime("%H:%M")
+		return f"oxirgi marta {at}" if days == 0 else f"kecha {at} da" if days == 1 else \
+			f"oxirgi marta {d.strftime('%d.%m.%y')}"
+	if isinstance(status, types.UserStatusRecently):
+		return "yaqinda onlayn edi"
+	if isinstance(status, types.UserStatusLastWeek):
+		return "shu hafta onlayn edi"
+	if isinstance(status, types.UserStatusLastMonth):
+		return "shu oy onlayn edi"
+	return "ancha oldin onlayn edi"
+
+
+def about(entity, kind: str) -> str:
+	"""Under the chat's name: how a user is, or how many a group or channel has
+	(only what the entity already knows: no request for it)."""
+	if entity is None:
+		return ""
+	if isinstance(entity, types.User):
+		if entity.is_self:
+			return ""
+		return "bot" if entity.bot else seen(entity.status)
+	n = getattr(entity, "participants_count", None)
+	if kind == "channel":
+		return f"{n} obunachi" if n else "kanal"
+	return f"{n} a'zo" if n else "guruh"
+
+
 def preview(text: str, media: str) -> str:
 	"""One line for the chat list: the text, or what kind of message it is."""
 	if media and media in MEDIA_UZ:
@@ -102,6 +137,8 @@ class Backend(QObject):
 	contacts = Signal(object)	# [contact, ...] by name
 	incoming = Signal(object, object)	# message, the chat's dict as it is now
 	sent = Signal(object, object)	# the local id it was shown with, the message as sent
+	info = Signal(object, object)	# chat id, what its header says under the name ("onlayn", "12 a'zo")
+	typing = Signal(object, object)	# chat id, who is writing ("" in a private chat; None: stopped)
 	error = Signal(str)
 
 	def __init__(self):
@@ -185,9 +222,10 @@ class Backend(QObject):
 			api = json.load(f)
 		self.client = TelegramClient(os.path.join(DATA, "tepegram"), int(api["id"]), api["hash"],
 		                             device_model="Galaxy S10 5G", system_version="OmonullOS",
-		                             app_version="Tepegram 0.2", lang_code="uz", system_lang_code="uz")
+		                             app_version="Tepegram 0.4", lang_code="uz", system_lang_code="uz")
 		self.client.add_event_handler(self._on_new, events.NewMessage)
 		self.client.add_event_handler(self._on_read, events.MessageRead(inbox=False))
+		self.client.add_event_handler(self._on_user, events.UserUpdate)
 		await self.client.connect()
 		if await self.client.is_user_authorized():
 			await self._ready()
@@ -322,6 +360,7 @@ class Backend(QObject):
 	async def _load_history(self, chat_id: int, limit: int):
 		"""The newest messages; or, with some unread, a few read ones and the
 		unread after them, so the chat opens where it was left."""
+		await self._load_info(chat_id)
 		unread = self._chats.get(chat_id, {}).get("unread", 0)
 		read_in = self._read_in.get(chat_id, 0)
 		if unread and read_in:
@@ -333,6 +372,10 @@ class Backend(QObject):
 			return
 		msgs = await self.client.get_messages(chat_id, limit=limit)
 		self.history.emit(chat_id, await self._messages(chat_id, msgs), {"first_unread": 0, "newer": False})
+
+	async def _load_info(self, chat_id: int):
+		c = self._chats.get(chat_id, {})
+		self.info.emit(chat_id, about(self._entities.get(chat_id), c.get("kind", "user")))
 
 	async def _load_older(self, chat_id: int, before_id: int, limit: int):
 		msgs = await self.client.get_messages(chat_id, limit=limit, max_id=before_id)
@@ -359,6 +402,25 @@ class Backend(QObject):
 	async def _on_read(self, event):
 		self._read_out[event.chat_id] = max(self._read_out.get(event.chat_id, 0), event.max_id)
 		self.read_out.emit(event.chat_id, event.max_id)
+
+	async def _on_user(self, event):
+		"""Someone came online or went, or is writing (pushed by Telegram, not asked for)."""
+		if event.typing or event.cancel:
+			chat_id = event.chat_id
+			if chat_id not in self._chats:
+				return
+			who = ""
+			if event.cancel:
+				who = None
+			elif self._chats[chat_id].get("kind") != "user":
+				person = self._entities.get(event.user_id)
+				who = (utils.get_display_name(person).split() or [""])[0] if person else "kimdir"
+			self.typing.emit(chat_id, who)
+		elif event.status is not None and event.user_id in self._chats:
+			person = self._entities.get(event.user_id)
+			if isinstance(person, types.User):
+				person.status = event.status
+			self.info.emit(event.user_id, seen(event.status))
 
 	async def _send(self, chat_id: int, text: str, local_id: int):
 		m = await self.client.send_message(chat_id, text)

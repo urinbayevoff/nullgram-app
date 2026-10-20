@@ -5,6 +5,7 @@ same app fits the Galaxy S10 5G and other phones. Telegram itself runs on
 tg.Backend's own thread; this file only draws and reacts to its signals.
 """
 import itertools
+import json
 import os
 import sys
 import time
@@ -18,15 +19,36 @@ from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import Qt
 
+import views
 import ztos
 from glass import GlassBar
-from tg import Backend, preview
-from views import (Bubble, ChatRow, ContactRow, DayLabel, List, QrView, TiledPage, UnreadLabel, changed, day_title,
-                   set_photo, stamp_now)
+from tg import DATA, Backend, preview
+from views import (THEMES, Bubble, ChatRow, ContactRow, DayLabel, List, QrView, ThemeRow, TiledPage, UnreadLabel,
+                   changed, day_title, draw_avatar, set_photo, stamp_now)
 
 app = ztos.App()
 tg = Backend()
 _local_ids = itertools.count(-1, -1)	# ids for bubbles shown before Telegram gives theirs
+SETTINGS = os.path.join(DATA, "settings.json")
+
+
+def load_settings() -> dict:
+	try:
+		with open(SETTINGS) as f:
+			return json.load(f)
+	except (OSError, ValueError):
+		return {}
+
+
+def save_settings(**changes):
+	settings = dict(load_settings(), **changes)
+	os.makedirs(DATA, exist_ok=True)
+	with open(SETTINGS + ".new", "w") as f:
+		json.dump(settings, f)
+	os.replace(SETTINGS + ".new", SETTINGS)
+
+
+views.set_theme(load_settings().get("theme", "qora"))
 
 
 class Connecting(ztos.Page):
@@ -191,8 +213,10 @@ class Chat(TiledPage):
 	"""One conversation, newest at the bottom, and a box to write in under it
 	that stays put (off the list, so its cursor is not a change of it). With
 	unread messages it opens where they start. Older ones come when the list
-	stops near its top, newer ones (if it opened among the unread) near its foot."""
+	stops near its top, newer ones (if it opened among the unread) near its foot.
+	Over its head glass too: back, the name and how they are, the avatar."""
 	NEAR = 600		# points from an end
+	TYPING = 6000		# ms "writing..." stays without a word more from Telegram
 
 	def __init__(self, chat: dict):
 		super().__init__(chat["name"])
@@ -213,16 +237,23 @@ class Chat(TiledPage):
 			self.box.submitted.connect(lambda _: self.send())
 			parts = [("circle", "down", self.to_bottom), ("field", self.box),
 			         ("circle", "up", self.send, lambda: bool(self.box.text().strip()))]
+		self.set_wallpaper(views.THEME["wall"])
 		self.foot = GlassBar(self, parts, height=44)
-		self.glass.append(self.foot)
-		self.list.setContentsMargins(ztos.MARGIN, 0, ztos.MARGIN, self.foot.space())
+		self.header.hide()
+		self.status, self.writing = "", None
+		self._writing_ends = QTimer(self, singleShot=True, interval=self.TYPING)
+		self._writing_ends.timeout.connect(lambda: self._typing(self.chat["id"], None))
+		self.head = GlassBar(self, [("circle", "back", app.back), ("space",), ("title", self._lines), ("space",),
+		                            ("avatar", self._paint_avatar)], height=44, at="top")
+		self.glass += [self.head, self.foot]
+		self.list.setContentsMargins(ztos.MARGIN, self.head.space(), ztos.MARGIN, self.foot.space())
 		for sig, slot in self._links():
 			sig.connect(slot)
 
 	def _links(self):
 		return ((tg.history, self._history), (tg.older, self._older), (tg.newer, self._newer),
 		        (tg.incoming, self._incoming), (tg.sent, self._sent), (tg.read_out, self._read_out),
-		        (tg.avatar, self._avatar))
+		        (tg.avatar, self._avatar), (tg.info, self._info), (tg.typing, self._typing))
 
 	def shown(self):
 		self.reload()
@@ -279,7 +310,8 @@ class Chat(TiledPage):
 		label = next((w for w in widgets if isinstance(w, UnreadLabel)), None)
 		if label is not None:
 			self._stick = False
-			QTimer.singleShot(0, lambda: self._fit() or self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y() - 8))
+			QTimer.singleShot(0, lambda: self._fit() or self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y()
+			                                                           - self.head.space()))
 		else:
 			self.to_bottom()
 		if not self.more_after:
@@ -363,6 +395,8 @@ class Chat(TiledPage):
 			return
 		for w in self._widgets([m], self._last_day()):
 			self.bubbles.add(w)
+		if not m["out"] and self.writing is not None:
+			self._typing(self.chat["id"], None)
 		if self._stick or m["out"]:
 			self.to_bottom()
 		if not m["out"] and app.page is self and active():
@@ -400,7 +434,33 @@ class Chat(TiledPage):
 			if b.msg.get("out") and not b.msg.get("read") and 0 < mid <= max_id:
 				b.set_msg(dict(b.msg, read=True))
 
+	# the head
+	def _lines(self):
+		if self.writing is not None:
+			return self.chat["name"], f"{self.writing} yozmoqda..." if self.writing else "yozmoqda...", True
+		return self.chat["name"], self.status, self.status == "onlayn"
+
+	def _paint_avatar(self, p, rect):
+		draw_avatar(p, rect.x(), rect.y(), rect.width(), self.chat["id"], self.chat["name"], 14)
+
+	def _info(self, chat_id: int, text: str):
+		if chat_id == self.chat["id"] and text != self.status:
+			self.status = text
+			self.head.restyle()
+
+	def _typing(self, chat_id: int, who):
+		if chat_id != self.chat["id"] or who == self.writing:
+			return
+		self.writing = who
+		if who is None:
+			self._writing_ends.stop()
+		else:
+			self._writing_ends.start()
+		self.head.restyle()
+
 	def _avatar(self, user_id: int, path: str):
+		if user_id == self.chat["id"]:
+			self.head.restyle()
 		for b in self.ids.values():
 			if b.msg.get("sender_id") == user_id and b._avatar():
 				b.redraw()
@@ -417,9 +477,10 @@ class Settings(ztos.Page):
 		super().__init__("sozlamalar")
 		self.account = self.entry(me.get("name", ""), me.get("phone", "") and "+" + me["phone"])
 		self.space(8)
+		self.theme = self.entry("chat mavzusi", views.THEME["name"], lambda: app.push(Themes(self)))
 		self.entry("chatlarni yangilash", "ro'yxatni Telegram'dan qayta olish", self.refresh)
 		self.entry("chiqish", "bu telefonda Telegram'dan chiqish", self.log_out)
-		self.section("TEPEGRAM 0.3")
+		self.section("TEPEGRAM 0.4")
 		self.text("Telegram uchun norasmiy ilova. Telethon (MIT) asosida.", 13)
 
 	def refresh(self):
@@ -431,6 +492,22 @@ class Settings(ztos.Page):
 			if i == 0:
 				tg.log_out()
 		ztos.message("chiqish", "Bu telefonda Telegram hisobingizdan chiqasizmi?", ("chiqish", "bekor"), done)
+
+
+class Themes(ztos.Page):
+	"""How chats look: Windows Phone's black, or a wallpaper and round bubbles."""
+
+	def __init__(self, settings: Settings):
+		super().__init__("mavzu")
+		self.settings = settings
+		for t in THEMES:
+			self.add(ThemeRow(t, self.pick))
+
+	def pick(self, theme: dict):
+		views.set_theme(theme["id"])
+		save_settings(theme=theme["id"])
+		self.settings.theme.set_detail(theme["name"])
+		app.pop()
 
 
 class Home(ztos.Pivot):
