@@ -17,6 +17,14 @@ Page {
 
     ListModel { id: messages }       // newest first: the list runs bottom to top
 
+    property var flying: null       // the text just sent and where it was: its bubble starts there
+    property bool lift: false
+    NumberAnimation {
+        id: scroll
+        target: list; property: "contentY"; duration: 300
+        easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0]
+    }
+    Timer { id: landed; interval: 320; onTriggered: page.lift = false }
     property int now: Date.now() / 1000      // "N minutes ago" moves on by itself
     Timer { interval: 30000; repeat: true; running: true; onTriggered: page.now = Date.now() / 1000 }
 
@@ -92,7 +100,24 @@ Page {
             for (let i = 0; i < Math.min(messages.count, 20); i++)
                 if (messages.get(i).msgId === m.id)
                     return
+            const from = m.is_outgoing && page.flying && m.content["@type"] === "messageText" &&
+                         m.content.text.text === page.flying.text ? page.flying : null
+            const bottom = list.atYBeginning || from
+            const was = list.contentY
             messages.insert(0, page.row(m))
+            if (bottom) {            // keep the newest in sight: scroll to it on the sent bubble's vertical curve
+                list.positionViewAtBeginning()
+                const to = list.contentY
+                list.contentY = was
+                scroll.to = to
+                scroll.restart()
+                if (from) {
+                    page.flying = null
+                    const it = list.itemAtIndex(0)
+                    if (it)
+                        it.flyFrom(from)
+                }
+            }
             if (!m.is_outgoing)
                 page.read([m])
         }
@@ -117,6 +142,7 @@ Page {
     ListView {
         id: list
         anchors.fill: parent
+        z: page.lift ? 2 : 0        // over the field while a sent bubble leaves it (the header stays over all)
         anchors.topMargin: 0
         model: messages
         verticalLayoutDirection: ListView.BottomToTop
@@ -148,66 +174,87 @@ Page {
             width: list.width
             height: bubble.height + (first ? 8 : 2)
 
+            // a message just sent flies here from where its text was in the field: it starts
+            // there (moved by mover's x, y) and comes to rest on Telegram-iOS's two curves
+            // (ChatMessageTransitionNode.swift), on the render thread
             Item {
-                id: bubble
-                y: item.first ? 8 : 2
-                x: item.out ? item.width - width - 8 - 6 : 8 + 6
-                width: Math.min(item.width * 0.78, Math.max(body.implicitWidth, who.implicitWidth, stamp.implicitWidth + 10) + 24)
-                height: (who.visible ? who.height + 2 : 0) + body.height + 16
+                id: mover
+                width: item.width; height: item.height
+                Item {
+                    id: bubble
+                    y: item.first ? 8 : 2
+                    x: item.out ? item.width - width - 8 - 6 : 8 + 6
+                    width: Math.min(item.width * 0.78, Math.max(body.implicitWidth, who.implicitWidth, stamp.implicitWidth + 10) + 24)
+                    height: (who.visible ? who.height + 2 : 0) + body.height + 16
 
-                Rectangle {     // while the stretched picture loads
-                    anchors.fill: parent
-                    visible: shape.status !== Image.Ready
-                    radius: 17
-                    color: item.out ? Theme.bubbleOut : Theme.bubbleIn
-                }
-                BorderImage {   // the bubble, stretched from a small picture (tepegram.py Bubble)
-                    id: shape
-                    anchors.fill: parent
-                    anchors.leftMargin: item.out ? 0 : -6
-                    anchors.rightMargin: item.out ? -6 : 0
-                    border { left: item.out ? 17 : 23; right: item.out ? 23 : 17; top: 17; bottom: 17 }
-                    source: "image://bubble/" + (item.out ? "out/" : "in/") + (item.first ? "b/" : "s/") + (item.last ? "t/" : "s/")
-                            + String(item.out ? Theme.bubbleOut : Theme.bubbleIn).slice(1) + "/" + Screen.devicePixelRatio
-                    smooth: true
-                }
+                    Rectangle {     // while the stretched picture loads
+                        anchors.fill: parent
+                        visible: shape.status !== Image.Ready
+                        radius: 17
+                        color: item.out ? Theme.bubbleOut : Theme.bubbleIn
+                    }
+                    BorderImage {   // the bubble, stretched from a small picture (tepegram.py Bubble)
+                        id: shape
+                        anchors.fill: parent
+                        anchors.leftMargin: item.out ? 0 : -6
+                        anchors.rightMargin: item.out ? -6 : 0
+                        border { left: item.out ? 17 : 23; right: item.out ? 23 : 17; top: 17; bottom: 17 }
+                        source: "image://bubble/" + (item.out ? "out/" : "in/") + (item.first ? "b/" : "s/") + (item.last ? "t/" : "s/")
+                                + String(item.out ? Theme.bubbleOut : Theme.bubbleIn).slice(1) + "/" + Screen.devicePixelRatio
+                        smooth: true
+                    }
 
-                Text {
-                    id: who
-                    visible: item.sender !== "" && item.first
-                    x: 12; y: 7
-                    text: item.sender
-                    color: item.tint
-                    font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                    Text {
+                        id: who
+                        visible: item.sender !== "" && item.first
+                        x: 12; y: 7
+                        text: item.sender
+                        color: item.tint
+                        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        id: body
+                        x: 12
+                        y: who.visible ? who.y + who.height + 2 : 8
+                        width: Math.min(implicitWidth, item.width * 0.78 - 24)
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        // the time sits in the last line's corner: room for it after the text
+                        text: (item.kind ? "[" + item.kind + "] " : "") + item.text + "    "
+                        color: item.out ? Theme.outText : Theme.inText
+                        font.family: Theme.font; font.pixelSize: 16
+                    }
+                    Text {
+                        id: stamp
+                        anchors.right: parent.right; anchors.rightMargin: 10
+                        anchors.bottom: parent.bottom; anchors.bottomMargin: 6
+                        textFormat: Text.StyledText
+                        text: (item.views ? item.views + " · " : "") + item.time +
+                              (item.out ? (item.sending ? " ◷" : " <font color='" + Theme.check + "'>✓</font>") : "")
+                        color: item.out ? Theme.outMeta : Theme.inMeta
+                        font.family: Theme.font; font.pixelSize: 12
+                    }
                 }
-                Text {
-                    id: body
-                    x: 12
-                    y: who.visible ? who.y + who.height + 2 : 8
-                    width: Math.min(implicitWidth, item.width * 0.78 - 24)
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                    // the time sits in the last line's corner: room for it after the text
-                    text: (item.kind ? "[" + item.kind + "] " : "") + item.text + "    "
-                    color: item.out ? Theme.outText : Theme.inText
-                    font.family: Theme.font; font.pixelSize: 16
-                }
-                Text {
-                    id: stamp
-                    anchors.right: parent.right; anchors.rightMargin: 10
-                    anchors.bottom: parent.bottom; anchors.bottomMargin: 6
-                    textFormat: Text.StyledText
-                    text: (item.views ? item.views + " · " : "") + item.time +
-                          (item.out ? (item.sending ? " ◷" : " <font color='" + Theme.check + "'>✓</font>") : "")
-                    color: item.out ? Theme.outMeta : Theme.inMeta
-                    font.family: Theme.font; font.pixelSize: 12
-                }
+            }
+            XAnimator { id: flyX; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.23, 1.0, 0.32, 1.0, 1.0, 1.0] }
+            YAnimator { id: flyY; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0] }
+            // start where the text was in the field. Called before the list scrolls to this on
+            // the same vertical curve: the two together make one path from there to rest.
+            function flyFrom(from) {
+                const here = body.mapToItem(page, 0, 0)
+                mover.x = from.x - here.x
+                mover.y = from.y - here.y
+                page.lift = true
+                landed.restart()
+                flyX.start()
+                flyY.start()
             }
         }
     }
 
     Rectangle {          // the header: back, the name and what it is
         id: bar
+        z: 3
         width: parent.width; height: 56
         color: Theme.bar
         Text {
@@ -250,6 +297,7 @@ Page {
 
     Rectangle {          // the field
         id: input
+        z: 1
         visible: !page.channel
         anchors.bottom: parent.bottom
         width: parent.width
@@ -288,6 +336,8 @@ Page {
                     const t = field.text.trim()
                     if (!t)
                         return
+                    const at = field.mapToItem(page, 0, 0)
+                    page.flying = { text: t, x: at.x, y: at.y }
                     store.sendText(page.chatId, t)
                     field.text = ""
                     list.positionViewAtBeginning()
