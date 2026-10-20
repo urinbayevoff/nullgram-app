@@ -156,7 +156,9 @@ class Bubble(QQuickImageProvider):
 		path.quadTo(x0, 0, x0 + rt, 0)
 		p.fillPath(path, QColor("#" + colour))
 		p.end()
-		img.setDevicePixelRatio(s)
+		# left at device pixel ratio 1: BorderImage on the GPU takes its borders in the picture's
+		# pixels and draws them that many points big whatever the ratio, so QML draws it `scale`
+		# times bigger and scales the item down (ChatPage.qml)
 		return img
 
 

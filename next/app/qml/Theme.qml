@@ -19,6 +19,8 @@ QtObject {
     readonly property color badge: accent
     readonly property color mutedBadge: dark ? "#666666" : "#b6b6bb"
     readonly property color highlight: dark ? "#2c2c2e" : "#e5e5ea"
+    readonly property color menu: dark ? Qt.rgba(0.14, 0.14, 0.15, 0.96) : Qt.rgba(1, 1, 1, 0.96)
+    readonly property color danger: dark ? "#ff453a" : "#ff3b30"
     readonly property color bubbleIn: dark ? "#1d1d1d" : "#ffffff"
     readonly property color bubbleOut: dark ? "#3e88f7" : "#e1ffc7"
     readonly property color inText: text

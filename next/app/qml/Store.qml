@@ -27,6 +27,8 @@ QtObject {
     signal message(var msg)             // a new message in any chat
     signal messageChanged(var chatId, var oldId, var msg)   // sent: its id is final now
     signal messagesDeleted(var chatId, var ids)
+    signal messageContent(var chatId, var id, var content)
+    signal messageEdited(var chatId, var id, var date)
     signal readOutbox(var chatId, var lastRead)
 
     // ---- talking to TDLib ----------------------------------------------------
@@ -120,6 +122,8 @@ QtObject {
         },
         updateNewMessage: (u) => store.message(u.message),
         updateMessageSendSucceeded: (u) => store.messageChanged(u.message.chat_id, u.old_message_id, u.message),
+        updateMessageContent: (u) => store.messageContent(u.chat_id, u.message_id, u.new_content),
+        updateMessageEdited: (u) => store.messageEdited(u.chat_id, u.message_id, u.edit_date),
         updateDeleteMessages: (u) => { if (u.is_permanent) store.messagesDeleted(u.chat_id, u.message_ids) },
         updateFile: (u) => store.file(u.file),
     })
@@ -421,9 +425,22 @@ QtObject {
         })
     }
 
-    function sendText(chatId, text) {
-        send({ "@type": "sendMessage", chat_id: chatId,
+    function sendText(chatId, text, replyTo) {
+        const req = { "@type": "sendMessage", chat_id: chatId,
+                      input_message_content: { "@type": "inputMessageText",
+                                               text: { "@type": "formattedText", text: text } } }
+        if (replyTo)
+            req.reply_to = { "@type": "inputMessageReplyToMessage", message_id: replyTo }
+        send(req, check)
+    }
+
+    function editText(chatId, messageId, text) {
+        send({ "@type": "editMessageText", chat_id: chatId, message_id: messageId,
                input_message_content: { "@type": "inputMessageText",
                                         text: { "@type": "formattedText", text: text } } }, check)
+    }
+
+    function deleteMessages(chatId, ids, everyone) {
+        send({ "@type": "deleteMessages", chat_id: chatId, message_ids: ids, revoke: everyone }, check)
     }
 }

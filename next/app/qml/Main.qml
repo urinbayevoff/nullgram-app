@@ -72,6 +72,12 @@ Rectangle {
         }
     }
 
+    // the shell's back: a menu or the like on the page closes first
+    function back() {
+        if (!(topPage && topPage.dismiss && topPage.dismiss()))
+            pop()
+    }
+
     function pop() {
         if (pages.length > 1 && !moving) {
             underPage.visible = true
@@ -158,6 +164,6 @@ Rectangle {
 
     // the shell's back button (Escape on a keyboard)
     focus: true
-    Keys.onBackPressed: root.pop()
-    Keys.onEscapePressed: root.pop()
+    Keys.onBackPressed: root.back()
+    Keys.onEscapePressed: root.back()
 }
