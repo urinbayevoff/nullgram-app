@@ -2,7 +2,7 @@
 id = "uz.omonullos.tepegram"
 name = "Tepegram"
 caps = "TEPEGRAM"
-version = "0.1.0"
+version = "0.2.0"
 entry = "main.py"
 icon = "icon.svg"
 description = "Telegram uchun norasmiy ilova, Windows Phone 8.1 ko'rinishida"

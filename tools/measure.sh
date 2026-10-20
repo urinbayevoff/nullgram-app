@@ -23,5 +23,12 @@ for k in 1 2 3; do
 done
 for k in 1 2 3 4 5 6; do fling 550 350 12; done; sleep 1
 sleep 2
+if [ "$1" = chat ]; then
+	fling 250 650 6; sleep 2
+	echo "open chat $(date +%T.%N | cut -c1-12)"; s down 1 180 170; sleep 0.08; s up 1; sleep 6
+	for k in 1 2 3; do fling 250 650 8; sleep 2; done
+	for k in 1 2 3; do fling 650 250 8; sleep 2; done
+	s down 1 60 740; sleep 0.08; s up 1; sleep 1
+fi
 rm -f ~/.config/ztos/profile
 echo MEASURE-DONE

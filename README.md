@@ -8,9 +8,10 @@ telefonlarga ham shu yo'l bilan o'tadi.
 | fayl | nima |
 |---|---|
 | `main.py` | sahifalar: ulanish, kirish (QR / raqam + kod + parol), chatlar, chat, sozlamalar |
-| `views.py` | o'z vidjetlarimiz: ChatRow, Bubble, DayLabel, QrView |
+| `views.py` | o'z vidjetlarimiz (Telegram for WP ko'rinishi): ChatRow, ContactRow, Bubble, CompactBar, QrView; `TiledPage` — ro'yxat GPU'da plitkalar bilan |
 | `tg.py` | Telegram bilan aloqa: `Backend` (o'z oqimida asyncio, Qt signallari dict tashiydi) — TDLib'ga o'tganda faqat shu fayl almashadi |
 | `tools/vendor.py` | Telethon, rsa, pyasn1, qrcode, pyaes ni PyPI'dan (sha256 bilan) `vendor/` ga |
+| `tools/measure.sh`, `tools/shot.sh` | telefonda: aylantirib kadr/s o'lchash, skrinshot |
 | `tools/deploy.sh` | telefonga: kutubxonalar (u yerda compileall), API kaliti, ilova (`ztos-sdk install`) |
 
 ## Telefonga qo'yish
