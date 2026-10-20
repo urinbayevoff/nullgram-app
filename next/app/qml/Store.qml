@@ -138,6 +138,12 @@ QtObject {
                    use_file_database: true, use_chat_info_database: true, use_message_database: true,
                    api_id: td.apiId, api_hash: td.apiHash, system_language_code: "uz",
                    device_model: "OmonullOS", system_version: "ztOS", application_version: "0.7-next" }, check)
+        } else if (auth === "WaitPhoneNumber" && td.testPhone) {
+            send({ "@type": "setAuthenticationPhoneNumber", phone_number: td.testPhone }, check)
+        } else if (auth === "WaitCode" && td.testPhone) {
+            send({ "@type": "checkAuthenticationCode", code: td.testPhone.charAt(5).repeat(5) }, check)
+        } else if (auth === "WaitRegistration" && td.testPhone) {
+            send({ "@type": "registerUser", first_name: "Sinov", last_name: td.testPhone.slice(-4) }, check)
         } else if (auth === "WaitPhoneNumber") {
             send({ "@type": "requestQrCodeAuthentication" }, check)
         } else if (auth === "WaitOtherDeviceConfirmation") {

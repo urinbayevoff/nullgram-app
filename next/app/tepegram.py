@@ -6,7 +6,8 @@ render thread and none in the UI thread's hot paths -- TDLib's answers are read
 on a thread of our own (ctypes lets the interpreter go while it waits) and
 reach QML as queued signals, which QML takes without Python.
 
-  python3 tepegram.py [--test-dc]      (--test-dc: Telegram's test servers, a throwaway account)
+  python3 tepegram.py [--test-dc]      (--test-dc: Telegram's test servers, a throwaway account;
+                                       TEPEGRAM_TEST_PHONE=99966XYYYY signs in there by itself)
 """
 import base64
 import ctypes
@@ -88,6 +89,8 @@ class Td(QObject):
 	apiHash = Property(str, lambda self: self._hash, constant=True)
 	dataDir = Property(str, lambda self: DATA, constant=True)
 	testDc = Property(bool, lambda self: TEST, constant=True)
+	# on the test servers only: sign in by itself with this number (99966XYYYY, the code is X five times)
+	testPhone = Property(str, lambda self: os.environ.get("TEPEGRAM_TEST_PHONE", "") if TEST else "", constant=True)
 
 
 class Round(QQuickImageProvider):
