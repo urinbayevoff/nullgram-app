@@ -1,0 +1,17 @@
+[app]
+id = "uz.omonullos.tepegram"
+name = "Tepegram"
+caps = "TEPEGRAM"
+version = "0.1.0"
+entry = "main.py"
+icon = "icon.svg"
+description = "Telegram uchun norasmiy ilova, Windows Phone 8.1 ko'rinishida"
+performance = "eco"
+
+[build]
+include = ["*.py", "*.svg"]
+exclude = ["vendor/**", "tools/**"]
+dependencies = []
+
+[device]
+host = "user@phone"

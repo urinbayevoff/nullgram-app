@@ -1,0 +1,5 @@
+vendor/
+dist/
+__pycache__/
+*.session
+*.session-journal
