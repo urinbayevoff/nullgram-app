@@ -16,6 +16,10 @@ QtObject {
     readonly property ListModel chatList: ListModel {}     // the main list in Telegram's order
     property var chats: ({})
     property var users: ({})
+    property var groups: ({})           // "b" + basic group id, "s" + supergroup id
+    property var actions: ({})          // chat id -> sender -> what they are doing (TDLib cancels them itself)
+    property int seen: 0                // users, groups or actions changed: what reads them binds to this
+    property int acting: 0              // actions alone (the chat list binds to this: statuses come often)
     property var _calls: ({})
     property int _seq: 0
     property var _fileChats: ({})       // a chat photo's file id -> chat ids showing it
@@ -63,7 +67,27 @@ QtObject {
                 : s === "connectionStateUpdating" ? "yangilanmoqda..."
                 : s === "connectionStateWaitingForNetwork" ? "tarmoq kutilmoqda..." : "ulanmoqda..."
         },
-        updateUser: (u) => { store.users[u.user.id] = u.user },
+        updateUser: (u) => { store.users[u.user.id] = u.user; store.seen++ },
+        updateUserStatus: (u) => {
+            const user = store.users[u.user_id]
+            if (user) {
+                user.status = u.status
+                store.seen++
+            }
+        },
+        updateBasicGroup: (u) => { store.groups["b" + u.basic_group.id] = u.basic_group; store.seen++ },
+        updateSupergroup: (u) => { store.groups["s" + u.supergroup.id] = u.supergroup; store.seen++ },
+        updateChatAction: (u) => {
+            const acts = store.actions[u.chat_id] || {}
+            const key = JSON.stringify(u.sender_id)
+            if (u.action["@type"] === "chatActionCancel")
+                delete acts[key]
+            else
+                acts[key] = { sender: u.sender_id, action: u.action["@type"] }
+            store.actions[u.chat_id] = acts
+            store.acting++
+            store.seen++
+        },
         updateNewChat: (u) => {
             const c = u.chat
             c.positions = c.positions || []
@@ -205,9 +229,10 @@ QtObject {
         const m = c.last_message
         let text = m ? preview(m.content) : ""
         let who = ""
-        if (c.draft_message && c.draft_message.input_message_text.text) {
+        const draft = c.draft_message && c.draft_message.content
+        if (draft && draft["@type"] === "draftMessageContentText" && draft.text.text) {
             who = "Qoralama"
-            text = c.draft_message.input_message_text.text.text
+            text = draft.text.text
         } else if (m && m.is_outgoing && c.type["@type"] !== "chatTypePrivate") {
             who = "Siz"
         } else if (m && (c.type["@type"] === "chatTypeBasicGroup" ||
@@ -239,6 +264,82 @@ QtObject {
         }
         const c = chats[sender.chat_id]
         return c ? c.title : ""
+    }
+
+    readonly property var doing: ({
+        chatActionTyping: "yozmoqda", chatActionRecordingVoiceNote: "ovozli xabar yozmoqda",
+        chatActionUploadingVoiceNote: "ovozli xabar yubormoqda", chatActionRecordingVideoNote: "video xabar yozmoqda",
+        chatActionUploadingVideoNote: "video xabar yubormoqda", chatActionRecordingVideo: "video yozmoqda",
+        chatActionUploadingVideo: "video yubormoqda", chatActionUploadingPhoto: "rasm yubormoqda",
+        chatActionUploadingDocument: "fayl yubormoqda", chatActionChoosingSticker: "stiker tanlamoqda",
+        chatActionChoosingLocation: "joylashuv tanlamoqda", chatActionChoosingContact: "kontakt tanlamoqda",
+        chatActionStartPlayingGame: "o'ynamoqda", chatActionWatchingAnimations: "ko'rmoqda"
+    })
+
+    // the line under a chat's name: what someone is doing in it, else whether the person is
+    // online and when they were, or how many are in the group; `now` in seconds
+    function status(c, now) {
+        if (!c)
+            return ""
+        const busy = activity(c)
+        if (busy)
+            return busy
+        const t = c.type["@type"]
+        if (t === "chatTypeBasicGroup") {
+            const g = groups["b" + c.type.basic_group_id]
+            return g ? count(g.member_count) + " a'zo" : "guruh"
+        }
+        if (t === "chatTypeSupergroup") {
+            const g = groups["s" + c.type.supergroup_id]
+            const what = c.type.is_channel ? "obunachi" : "a'zo"
+            return g && g.member_count ? count(g.member_count) + " " + what : c.type.is_channel ? "kanal" : "guruh"
+        }
+        if (t !== "chatTypePrivate")
+            return ""
+        const u = users[c.type.user_id]
+        if (!u || (me && u.id === me.id))
+            return ""
+        if (u.id === 777000)
+            return "xizmat xabarlari"
+        if (u.type["@type"] === "userTypeBot")
+            return "bot"
+        const s = u.status["@type"]
+        if (s === "userStatusOnline")
+            return u.status.expires > now ? "onlayn" : lastSeen(u.status.expires, now)
+        if (s === "userStatusOffline")
+            return lastSeen(u.status.was_online, now)
+        return s === "userStatusRecently" ? "yaqinda bo'lgan"
+             : s === "userStatusLastWeek" ? "shu hafta bo'lgan"
+             : s === "userStatusLastMonth" ? "shu oy bo'lgan" : "anchadan beri bo'lmagan"
+    }
+
+    // "yozmoqda...", "Ali yozmoqda...", "2 kishi yozmoqda..." or ""
+    function activity(c) {
+        const acts = Object.values(c && actions[c.id] || {})
+        if (!acts.length)
+            return ""
+        const what = (doing[acts[0].action] || "yozmoqda") + "..."
+        if (c.type["@type"] === "chatTypePrivate")
+            return what
+        return (acts.length > 1 ? acts.length + " kishi" : senderName(acts[0].sender, true)) + " " + what
+    }
+
+    function lastSeen(unix, now) {
+        if (now - unix < 60)
+            return "hozirgina bo'lgan"
+        if (now - unix < 3600)
+            return Math.floor((now - unix) / 60) + " daqiqa oldin bo'lgan"
+        const d = new Date(unix * 1000), today = new Date(now * 1000)
+        if (d.toDateString() === today.toDateString())
+            return "bugun " + Qt.formatTime(d, "HH:mm") + " da bo'lgan"
+        if (d.toDateString() === new Date(now * 1000 - 86400000).toDateString())
+            return "kecha " + Qt.formatTime(d, "HH:mm") + " da bo'lgan"
+        return Qt.formatDate(d, "dd.MM.yy") + " da bo'lgan"
+    }
+
+    // 12345 -> "12 345"
+    function count(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ")
     }
 
     readonly property var kinds: ({

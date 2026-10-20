@@ -81,8 +81,9 @@ Page {
                 wrapMode: Text.Wrap
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
-                text: (row.who ? row.who + ": " : "") + row.preview
-                color: Theme.grey
+                readonly property string busy: store.acting, store.activity(store.chats[row.chatId])
+                text: busy || (row.who ? row.who + ": " : "") + row.preview
+                color: busy ? Theme.accent : Theme.grey
                 font.family: Theme.font; font.pixelSize: 15
                 lineHeight: 0.95
             }

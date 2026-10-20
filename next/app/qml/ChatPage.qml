@@ -17,6 +17,9 @@ Page {
 
     ListModel { id: messages }       // newest first: the list runs bottom to top
 
+    property int now: Date.now() / 1000      // "N minutes ago" moves on by itself
+    Timer { interval: 30000; repeat: true; running: true; onTriggered: page.now = Date.now() / 1000 }
+
     Image {              // the wallpaper: a small picture of the gradient, drawn large
         anchors.fill: parent
         source: "image://wall/" + Theme.wall
@@ -25,6 +28,17 @@ Page {
 
     Component.onCompleted: {
         store.send({ "@type": "openChat", chat_id: chatId })
+        if (chat && chat.type["@type"] === "chatTypeSupergroup") {   // its update may not have the count
+            const g = store.groups["s" + chat.type.supergroup_id]
+            if (!g || !g.member_count)
+                store.send({ "@type": "getSupergroupFullInfo", supergroup_id: chat.type.supergroup_id }, (r) => {
+                    const g = store.groups["s" + page.chat.type.supergroup_id]
+                    if (g && r.member_count) {
+                        g.member_count = r.member_count
+                        store.seen++
+                    }
+                })
+        }
         store.history(chatId, 0, 30, (got) => {
             for (const m of got)
                 messages.append(page.row(m))
@@ -141,7 +155,7 @@ Page {
                 width: Math.min(item.width * 0.78, Math.max(body.implicitWidth, who.implicitWidth, stamp.implicitWidth + 10) + 24)
                 height: (who.visible ? who.height + 2 : 0) + body.height + 16
 
-                Rectangle {     // until the stretched picture works (it does not load yet: see STATUS)
+                Rectangle {     // while the stretched picture loads
                     anchors.fill: parent
                     visible: shape.status !== Image.Ready
                     radius: 17
@@ -217,9 +231,10 @@ Page {
             Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: page.channel ? "kanal" : page.group ? "guruh" : ""
+                elide: Text.ElideRight
+                text: store.seen, page.now, store.status(page.chat, page.now)     // (re-read when either changes)
                 visible: text !== ""
-                color: Theme.grey
+                color: text === "onlayn" || text.endsWith("...") ? Theme.accent : Theme.grey
                 font.family: Theme.font; font.pixelSize: 13
             }
         }
