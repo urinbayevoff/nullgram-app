@@ -24,6 +24,7 @@ Page {
         id: scroll
         target: list; property: "contentY"; duration: 300
         easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0]
+        onFinished: list.down = list.atYBeginning
     }
     Timer { id: landed; interval: 320; onTriggered: page.lift = false }
     property int now: Date.now() / 1000      // "N minutes ago" moves on by itself
@@ -129,6 +130,21 @@ Page {
             if (messages.get(i).msgId === id)
                 return i
         return -1
+    }
+
+    function otherDay(other, date) {
+        return !other || new Date(other.date * 1000).toDateString() !== new Date(date * 1000).toDateString()
+    }
+
+    readonly property var months: ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust",
+                                   "sentabr", "oktabr", "noyabr", "dekabr"]
+    function dayName(unix) {
+        const d = new Date(unix * 1000), now = new Date()
+        if (d.toDateString() === now.toDateString())
+            return "Bugun"
+        if (d.toDateString() === new Date(now - 86400000).toDateString())
+            return "Kecha"
+        return d.getDate() + "-" + months[d.getMonth()] + (d.getFullYear() !== now.getFullYear() ? " " + d.getFullYear() : "")
     }
 
     function apart(other, senderKey, date) {
@@ -325,6 +341,9 @@ Page {
             header: Item { width: 1; height: input.height + 10 }
             footer: Item { width: 1; height: bar.height + 8 }
             onAtYEndChanged: if (atYEnd) page.older()       // the top, in a bottom-to-top list
+            // whether it stands at the newest: then it stays there when the field grows or shrinks
+            property bool down: true
+            onMovementEnded: down = atYBeginning
 
             delegate: Item {
                 id: item
@@ -350,8 +369,26 @@ Page {
                 readonly property bool first: page.apart(messages.get(index + 1), senderKey, date)
                 readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
                 readonly property real most: width * 0.78
+                // the first message of a day has the day over it
+                readonly property bool newDay: page.otherDay(messages.get(index + 1), date)
+                readonly property real above: (newDay ? 38 : 0) + (first ? 8 : 2)
                 width: list.width
-                height: bubble.height + (first ? 8 : 2)
+                height: bubble.height + above
+
+                Rectangle {
+                    visible: item.newDay
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 10
+                    width: dayText.implicitWidth + 16; height: 22; radius: 11
+                    color: Theme.dayPill
+                    Text {
+                        id: dayText
+                        anchors.centerIn: parent
+                        text: item.newDay ? page.dayName(item.date) : ""
+                        color: "white"
+                        font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                    }
+                }
 
                 // a message just sent flies here from where its text was in the field: it starts
                 // there (moved by mover's x, y) and comes to rest on Telegram-iOS's two curves
@@ -361,7 +398,7 @@ Page {
                     width: item.width; height: item.height
                     Item {
                         id: bubble
-                        y: item.first ? 8 : 2
+                        y: item.above
                         x: item.out ? item.width - width - 8 - 6 : 8 + 6
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
@@ -536,6 +573,7 @@ Page {
             width: parent.width
             height: visible ? compose.height + Math.max(52, field.contentHeight + 26) : 0
             color: Theme.bar
+            onHeightChanged: if (list.down && !scroll.running) Qt.callLater(list.positionViewAtBeginning)
             Item {
                 id: compose
                 width: parent.width
