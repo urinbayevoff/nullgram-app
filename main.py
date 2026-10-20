@@ -17,16 +17,17 @@ os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 # Telegram's thread runs Python too: the UI thread gets the interpreter back within 1 ms, not 5
 sys.setswitchinterval(0.001)
 
-from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtCore import QEvent, QPoint, QTimer
 from PySide6.QtGui import QGuiApplication
+from shiboken6 import isValid
 from PySide6.QtCore import Qt
 
 import views
 import ztos
 from glass import GlassBar
 from tg import DATA, Backend, preview
-from views import (THEMES, Bubble, ChatRow, ContactRow, DayLabel, List, PhotoView, QrView, ThemeRow, TiledPage,
-                   UnreadLabel, changed, day_title, draw_avatar, set_photo, stamp_now)
+from views import (THEMES, Bubble, ChatRow, ContactRow, DayLabel, FoundRow, List, PhotoView, QrView, SectionLabel,
+                   ThemeRow, TiledPage, UnreadLabel, changed, day_title, draw_avatar, fold, set_photo, stamp_now)
 
 app = ztos.App()
 tg = Backend()
@@ -37,6 +38,8 @@ AHEAD = 8		# the top chats with nothing unread: their messages fetched before th
 
 
 def remember(chat_id: int, msgs: list, info: dict):
+	if info.get("focus"):
+		return		# about a message search found: not where the chat opens next time
 	_histories.pop(chat_id, None)
 	_histories[chat_id] = (msgs, info)
 	while len(_histories) > HISTORIES:
@@ -239,9 +242,12 @@ class Chat(TiledPage):
 	WAIT = 700		# ms
 	TYPING = 6000		# ms "writing..." stays without a word more from Telegram
 
-	def __init__(self, chat: dict):
+	MARKED = 2500		# ms the message search led to stays marked
+
+	def __init__(self, chat: dict, focus: int = 0):
 		super().__init__(chat["name"])
 		self.chat = chat
+		self.focus = focus		# a message search found: it opens about it, marked
 		self.kind = chat.get("kind", "user")
 		self.ids = {}
 		self.bubbles = self.add(List())
@@ -288,9 +294,9 @@ class Chat(TiledPage):
 		# in their place, not all moved there when it goes in (90 ms for 40)
 		app._layout.addWidget(self)
 		self.busy(True)
-		tg.load_history(self.chat["id"])
+		tg.load_history(self.chat["id"], around=self.focus)
 		cached = _histories.get(self.chat["id"])
-		if cached and not self.chat.get("unread"):
+		if cached and not self.chat.get("unread") and not self.focus:
 			self._history(self.chat["id"], *cached)		# in at once; Telegram's answer may change it after
 		else:
 			QTimer.singleShot(self.WAIT, self._go_in)
@@ -369,6 +375,11 @@ class Chat(TiledPage):
 		t_added = time.perf_counter()
 		self.more_before, self.more_after = len(msgs) >= 10, info.get("newer", False)
 		label = next((w for w in widgets if isinstance(w, UnreadLabel)), None)
+		found = self.ids.get(info.get("focus"))
+		if found is not None:
+			found.marked = True
+			QTimer.singleShot(self.MARKED, lambda: self._unmark(found))
+			label = found		# scrolled to as the unread line is (a little below the head)
 		if self._pending:
 			# not on the screen yet: laid out and scrolled now, so it turns in as it will be
 			self.resize(app.page.size())
@@ -376,7 +387,8 @@ class Chat(TiledPage):
 			self._fit()
 			self._stick = label is None
 			t_fit = time.perf_counter()
-			self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y() - self.head.space() if label else 10 ** 7)
+			self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y() - self.head.space() - self._above(label)
+			               if label else 10 ** 7)
 			t_scroll = time.perf_counter()
 			views.PAINTS.clear()
 			self._go_in()
@@ -390,7 +402,7 @@ class Chat(TiledPage):
 		elif label is not None:
 			self._stick = False
 			QTimer.singleShot(0, lambda: self._fit() or self.scroll_to(label.mapTo(self.body, QPoint(0, 0)).y()
-			                                                           - self.head.space()))
+			                                                           - self.head.space() - self._above(label)))
 		else:
 			self.to_bottom()
 		if not self.more_after:
@@ -398,6 +410,16 @@ class Chat(TiledPage):
 		if ztos._profiling:
 			print(f"tepegram history: {len(msgs)} messages built in {(time.perf_counter() - t) * 1000:.0f} ms",
 			      file=sys.stderr, flush=True)
+
+	def _above(self, widget) -> int:
+		"""Room left over the message search led to (a few of those before it show)."""
+		return 90 if isinstance(widget, Bubble) else 0
+
+	def _unmark(self, bubble):
+		if isValid(bubble) and bubble.marked:
+			bubble.marked = False
+			bubble.redraw()
+			changed(bubble)
 
 	def _older(self, chat_id: int, msgs: list, more: bool):
 		if chat_id != self.chat["id"]:
@@ -561,6 +583,156 @@ class Chat(TiledPage):
 		return super().back()
 
 
+class Search(TiledPage):
+	"""Chats by name as it is typed (those on the phone at once, Latin or
+	Cyrillic alike), and once typing pauses (ASK ms, from 2 letters) what
+	Telegram finds: people, groups and channels by name or @username, and
+	messages in every chat. With nothing typed, the chats opened from here
+	last. The box is in glass at the head: at the foot the shell would lift
+	the page over the keyboard and the first results with it. While the
+	keyboard is up the list ends KEYBOARD over the foot, so all of it scrolls into view."""
+	ASK = 450		# ms
+	RECENT = 10
+	KEYBOARD = 300		# points
+
+	def __init__(self):
+		super().__init__("qidiruv")
+		self.query = ""
+		self.people = self.messages = None	# Telegram's answers to the query (None: not yet)
+		self.results = self.add(List())
+		self.box = ztos.TextBox(placeholder="chat, odam yoki xabar")
+		self.box.changed.connect(self._typed)
+		self.box.submitted.connect(lambda _: self._ask())
+		self.head = GlassBar(self, [("circle", "back", app.back), ("field", self.box)], height=44, at="top")
+		self.header.hide()
+		self.glass.append(self.head)
+		self._margins(False)
+		self.box.field.installEventFilter(self)
+		self._asking = QTimer(self, singleShot=True, interval=self.ASK)
+		self._asking.timeout.connect(self._ask)
+		tg.found.connect(self._found)
+		tg.avatar.connect(self._avatar)
+		if not contacts.rows:
+			tg.load_contacts()
+		self._build()
+
+	def _margins(self, keyboard: bool):
+		self.list.setContentsMargins(ztos.MARGIN, self.head.space(), ztos.MARGIN,
+		                             self.KEYBOARD if keyboard else ztos.MARGIN)
+
+	def eventFilter(self, obj, event):
+		box = getattr(self, "box", None)		# (the page's own filter is on before the box is made)
+		if box is not None and obj is box.field and event.type() in (QEvent.FocusIn, QEvent.FocusOut):
+			self._margins(event.type() == QEvent.FocusIn)
+		return super().eventFilter(obj, event)
+
+	def shown(self):
+		if not self.query:		# the keyboard up once the page is in
+			QTimer.singleShot(350, lambda: self.box.field.setFocus(Qt.OtherFocusReason))
+
+	def _typed(self, text: str):
+		query = " ".join(text.split())
+		if query == self.query:
+			return
+		self.query = query
+		self.people = self.messages = None
+		self._asking.stop()
+		self.busy(False)
+		if len(query) >= 2:
+			self._asking.start()
+		self._build()
+
+	def _ask(self):
+		if len(self.query) >= 2 and self.messages is None:
+			self.busy(True)
+			tg.search(self.query)
+
+	def _found(self, query: str, what: str, items: list):
+		if query != self.query:
+			return
+		if what == "people":
+			self.people = items
+		else:
+			self.messages = items
+			self.busy(False)
+		self._build()
+
+	def _local(self) -> list:
+		"""Chats and contacts whose name has the query, those starting with it first."""
+		q = fold(self.query)
+		seen, starts, inside = set(), [], []
+		for c in [r.chat for r in chats.chat_list.rows()] + [r.chat for r in contacts.rows.values()]:
+			if c["id"] in seen:
+				continue
+			seen.add(c["id"])
+			name = fold(c["name"])
+			if name.startswith(q) or f" {q}" in name:
+				starts.append(c)
+			elif q in name:
+				inside.append(c)
+		return starts + inside
+
+	def _build(self):
+		self.results.clear()
+		add = self.results.add
+		if not self.query:
+			recent = [tg._chats[i] for i in load_settings().get("recent", []) if i in tg._chats]
+			if recent:
+				add(SectionLabel("so'nggi"))
+				for c in recent:
+					add(ChatRow(c, self.open))
+			else:
+				add(SectionLabel("chat nomi, @username yoki xabardagi so'z", hint=True))
+			return
+		local = self._local()[:20]
+		shown = {c["id"] for c in local}
+		if local:
+			add(SectionLabel("chatlar"))
+			for c in local:
+				add(ChatRow(c, self.open))
+		people = [c for c in self.people or () if c["id"] not in shown]
+		if people:
+			add(SectionLabel("global qidiruv"))
+			for c in people:
+				add(ChatRow(c, self.open))
+		if self.messages:
+			add(SectionLabel("xabarlar"))
+			for c, m in self.messages:
+				add(FoundRow(c, m, self.query, self.open_found))
+		if self.messages is not None and not (local or people or self.messages):
+			add(SectionLabel("hech narsa topilmadi", hint=True))
+		elif len(self.query) < 2 and not local:
+			add(SectionLabel("yana bir harf yozing", hint=True))
+		self.scroll_to(0)
+
+	def _avatar(self, chat_id: int, path: str):
+		set_photo(chat_id, path)
+		for row in self.results.rows():
+			if getattr(row, "chat", None) and row.chat["id"] == chat_id:
+				row.update_chat(row.chat)
+
+	def _remember(self, chat: dict):
+		recent = [chat["id"]] + [i for i in load_settings().get("recent", []) if i != chat["id"]]
+		save_settings(recent=recent[:self.RECENT])
+
+	def open(self, chat: dict):
+		self._remember(chat)
+		self.box.field.clearFocus()
+		open_chat(chat)
+
+	def open_found(self, chat: dict, msg: dict):
+		self._remember(chat)
+		self.box.field.clearFocus()
+		Chat(chat, focus=msg["id"]).open()
+
+	def back(self) -> bool:
+		tg.found.disconnect(self._found)
+		tg.avatar.disconnect(self._avatar)
+		self._asking.stop()
+		self.release()
+		return super().back()
+
+
 class Viewer(ztos.Page):
 	"""A photo on the whole screen: the bubble's picture at once, the largest once it has come."""
 
@@ -596,7 +768,7 @@ class Settings(ztos.Page):
 		self.theme = self.entry("chat mavzusi", views.THEME["name"], lambda: app.push(Themes(self)))
 		self.entry("chatlarni yangilash", "ro'yxatni Telegram'dan qayta olish", self.refresh)
 		self.entry("chiqish", "bu telefonda Telegram'dan chiqish", self.log_out)
-		self.section("TEPEGRAM 0.5")
+		self.section("TEPEGRAM 0.6")
 		self.text("Telegram uchun norasmiy ilova. Telethon (MIT) asosida.", 13)
 
 	def refresh(self):
@@ -637,7 +809,7 @@ class Home(ztos.Pivot):
 		self.tabs = GlassBar(self, [
 			("tabs", [("chats", "chatlar", lambda: self.turn(0)), ("contacts", "kontaktlar", lambda: self.turn(1)),
 			          ("settings", "sozlamalar", lambda: app.push(Settings()))]),
-			("circle", "search", lambda: ztos.notify("Tepegram", "qidiruv hali yo'q"))],
+			("circle", "search", lambda: app.push(Search()))],
 			height=54, page=self.current)
 		for page in pages:
 			page.glass.append(self.tabs)

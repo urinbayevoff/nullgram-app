@@ -362,6 +362,118 @@ class ContactRow(_Pressable):
 		p.drawText(QPointF(x, 8 + 23 + 6), fm.elidedText(c["name"], Qt.ElideRight, self.width() - x))
 
 
+# Uzbek Cyrillic as its Latin, so "Шавкат" is found by "shavkat" and the other way round
+_LATIN = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ",
+                  ["a", "b", "v", "g", "d", "e", "yo", "j", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r",
+                   "s", "t", "u", "f", "x", "ts", "ch", "sh", "sh", "", "i", "", "e", "yu", "ya", "o", "q", "g",
+                   "h"]))
+_MARKS = set("'`ʻʼ‘’")
+
+
+def _fold_char(ch: str) -> str:
+	ch = ch.lower()
+	return "" if ch in _MARKS else _LATIN.get(ch, ch)
+
+
+def fold(text: str) -> str:
+	"""Text as search compares it: small letters, Latin, no apostrophes."""
+	return "".join(_fold_char(ch) for ch in text)
+
+
+def match_span(text: str, query: str):
+	"""Where `query` is in `text` as fold() compares them: (start, end) in `text`, or None."""
+	q = fold(query)
+	if not q:
+		return None
+	folded, where = [], []
+	for i, ch in enumerate(text):
+		f = _fold_char(ch)
+		folded.append(f)
+		where += [i] * len(f)
+	k = "".join(folded).find(q)
+	if k < 0:
+		return None
+	return where[k], where[k + len(q) - 1] + 1
+
+
+class SectionLabel(Cached):
+	"""A small caption over a group of rows ("chatlar", "xabarlar"), or a line of grey text alone."""
+
+	def __init__(self, text: str, hint: bool = False):
+		super().__init__()
+		self.text, self.hint = text, hint
+		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		self.setFixedHeight(64 if hint else 36)
+
+	def draw(self, p: QPainter):
+		p.setPen(GREY if self.hint else accent())
+		p.setFont(_font(FONT_REGULAR, 15) if self.hint else _font(FONT_SEMIBOLD, 13))
+		p.drawText(QRectF(0, 0, self.width(), self.height() - 4),
+		           (Qt.AlignHCenter | Qt.TextWordWrap if self.hint else Qt.AlignLeft) | Qt.AlignBottom, self.text)
+
+
+class FoundRow(_Pressable):
+	"""A message search found: its chat's avatar and name, when, and the text
+	about what was looked for, that part in the accent."""
+	H = 66
+	AV = 46.5
+
+	def __init__(self, chat: dict, msg: dict, query: str, on_tap):
+		super().__init__()
+		self.chat, self.msg, self.query = chat, msg, query
+		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+		self.setFixedHeight(self.H)
+		self.tapped.connect(lambda: on_tap(self.chat, self.msg))
+
+	def update_chat(self, chat: dict):
+		self.chat = chat
+		self.redraw()
+		changed(self)
+
+	def draw(self, p: QPainter):
+		from tg import preview
+		c, m, w = self.chat, self.msg, self.width()
+		p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
+		top = 9.0
+		draw_avatar(p, 0, top, self.AV, c["id"], c["name"], 20)
+		x = self.AV + 10.5
+		stamp = when(m.get("date", 0))
+		p.setFont(_font(FONT_SEMIBOLD, 13))
+		stamp_w = QFontMetricsF(p.font()).horizontalAdvance(stamp)
+		p.setPen(GREY)
+		p.drawText(QPointF(w - stamp_w, top + 22), stamp)
+		p.setPen(QColor("white"))
+		p.setFont(_font(FONT_SEMILIGHT, 22))
+		fm = QFontMetricsF(p.font())
+		p.drawText(QPointF(x, top + 22), fm.elidedText(c["name"], Qt.ElideRight, w - x - stamp_w - 8))
+
+		text = preview(m.get("text", ""), m.get("media", ""))
+		if m.get("out"):
+			text = "Siz: " + text
+		elif m.get("sender"):
+			text = m["sender"].split()[0] + ": " + text
+		p.setFont(_font(FONT_REGULAR, 15))
+		fm = QFontMetricsF(p.font())
+		room, y = w - x, top + 44
+		span = match_span(text, self.query)
+		if span and fm.horizontalAdvance(text[:span[0]]) > room * 0.4:
+			# the match far along: from a little before it
+			cut = max(0, span[0] - 12)
+			text, span = "…" + text[cut:], (span[0] - cut + 1, span[1] - cut + 1)
+		parts = [(text[:span[0]], GREY), (text[span[0]:span[1]], accent().lighter(130)), (text[span[1]:], GREY)] \
+			if span else [(text, GREY)]
+		for part, color in parts:
+			if room <= 0 or not part:
+				continue
+			shown = fm.elidedText(part, Qt.ElideRight, room)
+			p.setPen(color)
+			p.drawText(QPointF(x, y), shown)
+			x += fm.horizontalAdvance(shown)
+			room -= fm.horizontalAdvance(shown)
+			if shown != part:
+				break
+
+
 class Bubble(Cached):
 	"""One message: a square box, theirs white with a small corner at the top
 	left (in a group with the sender's avatar beside it), ours dark grey with
@@ -387,6 +499,7 @@ class Bubble(Cached):
 		self.kind = kind
 		self.on_open = on_open
 		self._down = None
+		self.marked = False		# the message search led to: a band of the accent behind it
 		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 		self._layout()
 
@@ -582,6 +695,10 @@ class Bubble(Cached):
 			x = w - self.side - self.box_w
 		else:
 			x = self.side + (self.AV + 6 if self._avatar() else 0)
+		if self.marked:
+			band = accent()
+			band.setAlpha(90)
+			p.fillRect(QRectF(-ztos.MARGIN, y - self.GAP / 2, w + 2 * ztos.MARGIN, self.box_h + self.GAP), band)
 		if self._avatar():
 			draw_avatar(p, 0, y, self.AV, m.get("sender_id", 0), m.get("sender", ""), 14)
 		box = QRectF(x, y, self.box_w, self.box_h)

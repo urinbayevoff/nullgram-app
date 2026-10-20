@@ -7,7 +7,7 @@ telefonlarga ham shu yo'l bilan o'tadi.
 
 | fayl | nima |
 |---|---|
-| `main.py` | sahifalar: ulanish, kirish (QR / raqam + kod + parol), chatlar, chat, sozlamalar |
+| `main.py` | sahifalar: ulanish, kirish (QR / raqam + kod + parol), chatlar, chat, qidiruv, sozlamalar |
 | `views.py` | o'z vidjetlarimiz (Telegram for WP ko'rinishi): ChatRow, ContactRow, Bubble, QrView; `TiledPage` — ro'yxat GPU'da plitkalar bilan (+ har plitkaning xira kichik nusxasi) |
 | `glass.py` | `GlassBar` — "liquid glass" panel (iOS Telegram o'lchamlari), pastda yoki tepada: tablar, doira tugmalar, yozish maydoni, sarlavha kapsulasi, avatar |
 | `tg.py` | Telegram bilan aloqa: `Backend` (o'z oqimida asyncio, Qt signallari dict tashiydi) — TDLib'ga o'tganda faqat shu fayl almashadi |

@@ -184,6 +184,7 @@ class Backend(QObject):
 	typing = Signal(object, object)	# chat id, who is writing ("" in a private chat; None: stopped)
 	pic = Signal(object, object, object)	# chat id, message id, its picture's path (as the bubble shows it)
 	full = Signal(object, object, object)	# chat id, message id, the photo at its largest
+	found = Signal(object, object, object)	# query, "people" ([chat, ...]) or "messages" ([(chat, message), ...])
 	error = Signal(str)
 
 	def __init__(self):
@@ -200,6 +201,7 @@ class Backend(QObject):
 		self._pic_msgs = {}		# (chat id, message id) -> the message, to download its picture from
 		self._pic_queue = []
 		self._pic_task = None
+		self._query = None		# the search asked last: answers to older ones are dropped
 		threading.Thread(target=self._run, name="tepegram-tg", daemon=True).start()
 
 	# ---- plumbing ---------------------------------------------------------
@@ -242,10 +244,16 @@ class Backend(QObject):
 	def load_chats(self):
 		self._go(self._load_chats())
 
-	def load_history(self, chat_id: int, limit: int = 40, ahead: bool = False):
+	def load_history(self, chat_id: int, limit: int = 40, ahead: bool = False, around: int = 0):
 		"""The chat's messages (`history`). `ahead`: before it is opened, so that it
-		opens at once -- its pictures not downloaded until it is."""
-		self._go(self._load_history(chat_id, limit, ahead))
+		opens at once -- its pictures not downloaded until it is. `around`: those
+		about that message (search led to it; info["focus"] is its id)."""
+		self._go(self._load_history(chat_id, limit, ahead, around))
+
+	def search(self, query: str):
+		"""People, groups and channels by name or @username, then messages in every chat (`found`)."""
+		self._query = query
+		self._go(self._search(query))
 
 	def load_older(self, chat_id: int, before_id: int, limit: int = 30):
 		self._go(self._load_older(chat_id, before_id, limit))
@@ -276,7 +284,7 @@ class Backend(QObject):
 			api = json.load(f)
 		self.client = TelegramClient(os.path.join(DATA, "tepegram"), int(api["id"]), api["hash"],
 		                             device_model="Galaxy S10 5G", system_version="OmonullOS",
-		                             app_version="Tepegram 0.5", lang_code="uz", system_lang_code="uz")
+		                             app_version="Tepegram 0.6", lang_code="uz", system_lang_code="uz")
 		self.client.add_event_handler(self._on_new, events.NewMessage)
 		self.client.add_event_handler(self._on_read, events.MessageRead(inbox=False))
 		self.client.add_event_handler(self._on_user, events.UserUpdate)
@@ -485,10 +493,17 @@ class Backend(QObject):
 			os.replace(got, path)
 		self.full.emit(chat_id, msg_id, path)
 
-	async def _load_history(self, chat_id: int, limit: int, ahead: bool = False):
+	async def _load_history(self, chat_id: int, limit: int, ahead: bool = False, around: int = 0):
 		"""The newest messages; or, with some unread, a few read ones and the
 		unread after them, so the chat opens where it was left."""
 		await self._load_info(chat_id)
+		if around:
+			half = limit // 2
+			before = await self.client.get_messages(chat_id, limit=half, max_id=around)
+			after = await self.client.get_messages(chat_id, limit=half, min_id=around - 1, reverse=True)
+			msgs = await self._messages(chat_id, list(before) + list(after))
+			self.history.emit(chat_id, msgs, {"first_unread": 0, "newer": len(after) >= half, "focus": around})
+			return
 		unread = self._chats.get(chat_id, {}).get("unread", 0)
 		read_in = self._read_in.get(chat_id, 0)
 		if unread and read_in:
@@ -526,6 +541,55 @@ class Backend(QObject):
 		out.sort(key=lambda c: c["name"].lower())
 		self.contacts.emit(out)
 		self._fetch_avatars([(c["id"], c["photo"]) for c in out])
+
+	def _peer_dict(self, entity) -> dict:
+		"""A chat dict for someone search found who may not be among the chats:
+		under the name their @username, and how many a group or channel has."""
+		chat_id = utils.get_peer_id(entity)
+		self._entities.setdefault(chat_id, entity)
+		if chat_id in self._chats:
+			return self._chats[chat_id]
+		if isinstance(entity, types.User):
+			kind = "user"
+		else:
+			kind = "channel" if getattr(entity, "broadcast", False) else "group"
+		user = getattr(entity, "username", None)
+		n = getattr(entity, "participants_count", None)
+		count = f"{n} obunachi" if n and kind == "channel" else f"{n} a'zo" if n else ""
+		c = {"id": chat_id, "name": utils.get_display_name(entity) or (user or ""),
+		     "text": " · ".join(t for t in (user and "@" + user, count) if t), "date": 0.0, "unread": 0, "out": False,
+		     "kind": kind, "pinned": False, "muted": False, "photo": photo_id(entity)}
+		self._chats[chat_id] = c		# (its kind is what opening it needs)
+		return c
+
+	async def _search(self, query: str):
+		from telethon.tl.functions.contacts import SearchRequest
+		result = await self.client(SearchRequest(q=query, limit=20))
+		if query != self._query:
+			return
+		entities = {utils.get_peer_id(e): e for e in list(result.users) + list(result.chats)}
+		people = []
+		for peer in list(result.my_results) + list(result.results):
+			entity = entities.get(utils.get_peer_id(peer))
+			if entity is not None and not getattr(entity, "deleted", False):
+				people.append(self._peer_dict(entity))
+		self.found.emit(query, "people", people)
+		self._fetch_avatars([(c["id"], c["photo"]) for c in people])
+		msgs = await self.client.get_messages(None, search=query, limit=30)
+		if query != self._query:
+			return
+		out = []
+		for m in msgs:
+			chat = m.chat
+			if chat is None:
+				continue
+			c = self._peer_dict(chat)
+			name = ""
+			if c["kind"] == "group" and not m.out and m.sender:
+				name = utils.get_display_name(m.sender)
+			out.append((c, message_dict(m, name, self._read_out.get(c["id"], 0))))
+		self.found.emit(query, "messages", out)
+		self._fetch_avatars(list({(c["id"], c["photo"]) for c, _ in out}))
 
 	async def _on_read(self, event):
 		self._read_out[event.chat_id] = max(self._read_out.get(event.chat_id, 0), event.max_id)
