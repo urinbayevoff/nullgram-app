@@ -141,7 +141,8 @@ QtObject {
         } else if (auth === "WaitPhoneNumber" && td.testPhone) {
             send({ "@type": "setAuthenticationPhoneNumber", phone_number: td.testPhone }, check)
         } else if (auth === "WaitCode" && td.testPhone) {
-            send({ "@type": "checkAuthenticationCode", code: td.testPhone.charAt(5).repeat(5) }, check)
+            send({ "@type": "checkAuthenticationCode",
+                   code: td.testPhone.charAt(5).repeat(s.code_info.type.length || 5) }, check)
         } else if (auth === "WaitRegistration" && td.testPhone) {
             send({ "@type": "registerUser", first_name: "Sinov", last_name: td.testPhone.slice(-4) }, check)
         } else if (auth === "WaitPhoneNumber") {

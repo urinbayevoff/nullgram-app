@@ -60,6 +60,8 @@ class Td(QObject):
 		self.lib = _load()
 		self.lib.td_execute(json.dumps({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}).encode())
 		self.client = self.lib.td_create_client_id()
+		# TDLib starts the client on its first request; until then no updates come
+		self.send(json.dumps({"@type": "getOption", "name": "version"}))
 		with open(KEY) as f:
 			key = json.load(f)
 		self._id, self._hash = int(key["id"]), key["hash"]
