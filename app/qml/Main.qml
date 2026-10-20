@@ -135,8 +135,9 @@ Rectangle {
 
     // the left edge of a pushed page pulls it back: let go past half (or flung) it goes
     // in distance/velocity clamped to 0.05..0.2 s, else it comes back in 0.1 s
-    MouseArea {
-        width: 20; height: parent.height
+    MouseArea {          // (below the header: its back button is under the left edge too)
+        y: 56
+        width: 20; height: parent.height - y
         z: 10
         enabled: root.pages.length > 1 && !root.moving
         property real lastX: 0
@@ -162,8 +163,11 @@ Rectangle {
         }
     }
 
-    // the shell's back button (Escape on a keyboard)
-    focus: true
-    Keys.onBackPressed: root.back()
-    Keys.onEscapePressed: root.back()
+    // the shell's back button (it sends Escape). A shortcut, not Keys on this item: those only
+    // hear it while nothing under them has the focus, and the field or a page soon takes it
+    Shortcut {
+        sequences: ["Esc", "Back"]
+        context: Qt.ApplicationShortcut
+        onActivated: root.back()
+    }
 }

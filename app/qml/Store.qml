@@ -506,14 +506,20 @@ QtObject {
     // ---- messages --------------------------------------------------------------
     // up to `limit` messages before `from` (0: the newest), newest first. TDLib answers
     // from its database at once and may give fewer: ask again until there are enough.
+    // `failed`: TDLib said no (offline, too many asks) -- that is not the beginning of the chat
     function history(chatId, from, limit, done, got) {
         got = got || []
         send({ "@type": "getChatHistory", chat_id: chatId, from_message_id: from, offset: 0,
                limit: limit - got.length, only_local: false }, (r) => {
+            if (r["@type"] === "error") {
+                console.warn("nullgram: getChatHistory", chatId, from, r.code, r.message)
+                done(got, true)
+                return
+            }
             const msgs = r.messages || []
             got = got.concat(msgs)
             if (msgs.length === 0 || got.length >= limit)
-                done(got)
+                done(got, false)
             else
                 store.history(chatId, msgs[msgs.length - 1].id, limit, done, got)
         })

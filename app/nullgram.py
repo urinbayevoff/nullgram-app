@@ -60,13 +60,17 @@ class Td(QObject):
 		self.lib = _load()
 		self.lib.td_execute(json.dumps({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}).encode())
 		self.client = self.lib.td_create_client_id()
-		# TDLib starts the client on its first request; until then no updates come
-		self.send(json.dumps({"@type": "getOption", "name": "version"}))
 		with open(KEY) as f:
 			key = json.load(f)
 		self._id, self._hash = int(key["id"]), key["hash"]
 		os.makedirs(DATA, exist_ok=True)
+
+	def start(self):
+		"""Once QML listens: a signal sent before anyone is connected is lost, and with it
+		TDLib's first update (asking for the parameters) -- the app would wait on a blank page."""
 		threading.Thread(target=self._receive, name="td", daemon=True).start()
+		# TDLib starts the client on its first request; until then no updates come
+		self.send(json.dumps({"@type": "getOption", "name": "version"}))
 
 	def _receive(self):
 		while True:
@@ -245,6 +249,7 @@ def main():
 	view.setSource(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
 	if view.status() == QQuickView.Error:
 		raise SystemExit("\n".join(e.toString() for e in view.errors()))
+	td.start()
 	view.showFullScreen()
 	sys.exit(app.exec())
 

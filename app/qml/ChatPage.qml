@@ -54,6 +54,7 @@ Page {
             page.add(got)
             page.ready = true
             page.read(got)
+            Qt.callLater(page.nearTop)          // a screen not yet full: more at once
         })
     }
     Component.onDestruction: store.send({ "@type": "closeChat", chat_id: chatId })
@@ -237,13 +238,25 @@ Page {
         if (loading || !more || !messages.count)
             return
         loading = true
-        store.history(chatId, messages.get(messages.count - 1).msgId, 40, (got) => {
+        store.history(chatId, messages.get(messages.count - 1).msgId, 40, (got, failed) => {
             if (!page)
                 return
             page.add(got)
-            page.more = got.length > 0
+            page.more = failed || got.length > 0
             page.loading = false
+            if (!failed)
+                Qt.callLater(page.nearTop)      // still near the top (a short page, a fast flick): the next ones
         })
+    }
+
+    // older messages while the top of the list is still 15 messages away, not only once it is reached:
+    // atYEnd alone does not change again when the list stays at the top after a load
+    function nearTop() {
+        if (loading || !more || !messages.count)
+            return
+        const top = list.indexAt(list.width / 2, list.contentY + 4)
+        if (top < 0 ? list.atYEnd : top >= messages.count - 15)
+            older()
     }
 
     // the replied message, if it is loaded
@@ -429,7 +442,7 @@ Page {
             flickDeceleration: 2200
             header: Item { width: 1; height: input.height + 10 }
             footer: Item { width: 1; height: bar.height + 8 }
-            onAtYEndChanged: if (atYEnd) page.older()       // the top, in a bottom-to-top list
+            onContentYChanged: page.nearTop()                // (index 0 is the newest, at the bottom)
             // whether it stands at the newest: then it stays there when the field grows or shrinks
             property bool down: true
             onMovementEnded: down = atYBeginning
@@ -696,8 +709,13 @@ Page {
                 x: 8; anchors.verticalCenter: parent.verticalCenter
                 text: "‹"
                 color: Theme.accent
+                opacity: backHit.pressed ? 0.4 : 1
                 font.family: Theme.font; font.pixelSize: 34
-                MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: page.nav.pop() }
+            }
+            MouseArea {          // the back button: the bar's whole height and 72 pt in, as iOS takes it
+                id: backHit
+                width: 72; height: parent.height
+                onClicked: page.nav.pop()
             }
             Column {
                 anchors.centerIn: parent
