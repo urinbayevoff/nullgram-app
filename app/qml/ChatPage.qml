@@ -1,9 +1,12 @@
 // One chat: the messages from the bottom up, a header over them and the field
 // under them. It is `ready` once its newest messages are laid out, so the push
 // moves a finished page. A long press on a message opens its menu (MessageMenu):
-// reply, copy, edit, delete.
+// reply, copy, edit, save, delete. Media: a GIF plays in its bubble, a video full screen
+// (PhotoViewer), a voice note or a song with the page's one player, a file comes down with a
+// ring round it; the clip sends pictures and files (AttachSheet), the mic held records a voice note.
 import QtQuick
 import QtQuick.Window
+import QtMultimedia
 
 Page {
     id: page
@@ -143,7 +146,8 @@ Page {
                          text: store.preview(m.content) }
     }
 
-    readonly property var pictured: ["messagePhoto", "messageVideo", "messageAnimation", "messageSticker", "messageVideoNote"]
+    readonly property var pictured: ["messagePhoto", "messageVideo", "messageAnimation", "messageSticker", "messageVideoNote",
+                                     "messageVoiceNote", "messageAudio", "messageDocument"]
 
     function shown(content) {
         const t = content["@type"]
@@ -168,7 +172,8 @@ Page {
     property var bigFiles: ({})      // message id -> the photo's biggest size (full screen)
     function media(c) {
         const t = c["@type"]
-        const r = { picKind: "", picW: 1, picH: 1, mini: "", dur: 0, file: null }
+        const r = { picKind: "", picW: 1, picH: 1, mini: "", dur: 0, file: null, main: null, rowKind: "",
+                    fileName: "", wave: "", title: "", sub: "", anim: false, auto: false }
         if (t === "messagePhoto" && c.photo.sizes.length) {
             const sizes = c.photo.sizes      // small to big
             let best = sizes[sizes.length - 1]
@@ -178,20 +183,34 @@ Page {
                     break
                 }
             Object.assign(r, { picKind: "photo", picW: best.width, picH: best.height, file: best.photo,
-                               big: sizes[sizes.length - 1].photo,
+                               big: sizes[sizes.length - 1].photo, main: sizes[sizes.length - 1].photo,
                                mini: c.photo.minithumbnail ? c.photo.minithumbnail.data : "" })
         } else if (t === "messageVideo" || t === "messageAnimation") {
             const v = t === "messageVideo" ? c.video : c.animation
             Object.assign(r, { picKind: t === "messageVideo" ? "video" : "gif", picW: v.width || 1, picH: v.height || 1,
-                               dur: v.duration, file: still(v.thumbnail), mini: v.minithumbnail ? v.minithumbnail.data : "" })
+                               dur: v.duration, file: still(v.thumbnail), mini: v.minithumbnail ? v.minithumbnail.data : "",
+                               main: t === "messageVideo" ? v.video : v.animation, fileName: v.file_name || "",
+                               auto: t === "messageAnimation" && (v.animation.size || v.animation.expected_size) < 8e6 })
         } else if (t === "messageSticker") {
             const st = c.sticker
+            const webm = st.format["@type"] === "stickerFormatWebm"
             Object.assign(r, { picKind: "sticker", picW: st.width || 1, picH: st.height || 1,
-                               file: st.format["@type"] === "stickerFormatWebp" ? st.sticker : still(st.thumbnail) })
+                               file: st.format["@type"] === "stickerFormatWebp" ? st.sticker : still(st.thumbnail),
+                               main: webm ? st.sticker : null, anim: webm, auto: webm })
         } else if (t === "messageVideoNote") {
             const v = c.video_note
             Object.assign(r, { picKind: "round", picW: 1, picH: 1, dur: v.duration, file: still(v.thumbnail),
-                               mini: v.minithumbnail ? v.minithumbnail.data : "" })
+                               mini: v.minithumbnail ? v.minithumbnail.data : "", main: v.video, auto: true })
+        } else if (t === "messageVoiceNote") {
+            const v = c.voice_note
+            Object.assign(r, { rowKind: "voice", dur: v.duration, wave: v.waveform || "", main: v.voice, auto: true })
+        } else if (t === "messageAudio") {
+            const a = c.audio
+            Object.assign(r, { rowKind: "audio", dur: a.duration, main: a.audio, fileName: a.file_name || "",
+                               title: a.title || a.file_name || "Musiqa", sub: a.performer || "" })
+        } else if (t === "messageDocument") {
+            const d = c.document
+            Object.assign(r, { rowKind: "file", main: d.document, fileName: d.file_name || "", file: still(d.thumbnail) })
         }
         return r
     }
@@ -204,6 +223,141 @@ Page {
         const f = bigFiles[item.msgId]
         if (f)
             store.fetch(f, 32, (path) => { if (page) viewer.better(path) })
+    }
+
+    // the message's own file (the video, the voice, the document...): how far it has come, and
+    // its path once here. `mains` by message, `fileMsgs` the other way (updateFile names files)
+    property var mains: ({})
+    property var fileMsgs: ({})
+    property var wantOpen: 0            // a tap asked for this one: it opens (plays) when it is here
+    function own(id, f) {
+        mains[id] = f
+        const ids = fileMsgs[f.id] || []
+        if (ids.indexOf(id) < 0)
+            ids.push(id)
+        fileMsgs[f.id] = ids
+    }
+
+    function download(id, open) {
+        const f = mains[id]
+        if (!f)
+            return
+        if (open)
+            wantOpen = id
+        const i = indexOf(id)
+        if (i >= 0 && messages.get(i).got < 0)
+            messages.setProperty(i, "got", 0)
+        store.fetch(f, open ? 32 : 1, () => {})
+    }
+
+    function stop(id) {
+        const f = mains[id]
+        if (wantOpen === id)
+            wantOpen = 0
+        if (f)
+            store.stopFile(f)
+        const i = indexOf(id)
+        if (i >= 0)
+            messages.setProperty(i, "got", -1)
+    }
+
+    // a tap on a message's media: open, play, or bring it down first (a second tap stops that)
+    function tapMedia(item) {
+        const k = item.rowKind || item.picKind
+        if (k === "photo") {
+            view(item)
+            return
+        }
+        if (!mains[item.msgId])
+            return
+        if (item.got >= 0 && !item.path && !item.sending) {
+            stop(item.msgId)
+            return
+        }
+        if (!item.path) {
+            download(item.msgId, true)
+            return
+        }
+        openMedia(item)
+    }
+
+    function openMedia(item) {
+        const k = item.rowKind || item.picKind
+        const mime = (mains[item.msgId] && fileMime[item.msgId]) || ""
+        if (k === "video" || k === "gif" || (k === "file" && mime.startsWith("video/"))) {
+            const src = item.pic ? "image://pic/0/" + Math.round(item.pw) + "/" + item.pic
+                      : item.mini ? "image://pic/0/" + Math.round(item.pw) + "/mini/" + item.mini : ""
+            viewer.show(item.media ? item.picFace : item.face, item.media ? item.aspect : 9 / 16, src, item.path)
+            viewing = item.msgId
+        } else if (k === "round") {
+            roundId = roundId === item.msgId ? 0 : item.msgId
+        } else if (k === "voice" || k === "audio" || (k === "file" && mime.startsWith("audio/"))) {
+            play(item.msgId, item.path)
+        } else if (k === "file" && mime.startsWith("image/")) {
+            viewer.show(item.face, 1, "file://" + item.path)
+            viewing = item.msgId
+        } else if (k === "file") {
+            save(item.msgId)
+        }
+    }
+    property var fileMime: ({})         // a document's mime type, by message
+    property var viewing: 0             // the message full screen (its ↓ saves it)
+
+    // into ~/Downloads (td.save), brought down first when it is not here
+    function save(id) {
+        const f = mains[id]
+        if (!f)
+            return
+        const name = fileNames[id] || f.local.path.split("/").pop()
+        store.fetch(f, 32, (path) => {
+            const to = td.save(path, name)
+            if (page)
+                page.toast(to ? "Saqlandi: Downloads/" + to.split("/").pop() : "Saqlab bo'lmadi")
+        })
+    }
+    property var fileNames: ({})
+
+    // the one sound the page plays: a voice note or a song; the next voice note under it follows
+    property var soundId: 0
+    function play(id, path) {
+        if (soundId === id) {
+            if (sound.playbackState === MediaPlayer.PlayingState)
+                sound.pause()
+            else
+                sound.play()
+            return
+        }
+        roundId = 0
+        soundId = id
+        sound.source = "file://" + path
+        sound.play()
+    }
+    function next() {
+        const i = indexOf(soundId)
+        const was = soundId
+        soundId = 0
+        if (i > 0) {
+            const r = messages.get(i - 1)
+            if (r.rowKind === "voice" && was) {
+                if (r.path)
+                    play(r.msgId, r.path)
+                else
+                    download(r.msgId, true)
+            }
+        }
+    }
+    MediaPlayer {
+        id: sound
+        audioOutput: AudioOutput {}
+        onMediaStatusChanged: if (mediaStatus === MediaPlayer.EndOfMedia) page.next()
+    }
+    property var roundId: 0             // the round video playing in its bubble, with its sound
+    onRoundIdChanged: if (roundId) sound.pause()
+
+    function toast(text) {
+        toastText.text = text
+        toastBox.opacity = 1
+        toastAway.restart()
     }
 
     function loadPic(id) {
@@ -225,6 +379,14 @@ Page {
             files[m.id] = p.file
         if (p.big)
             bigFiles[m.id] = p.big
+        if (p.main) {
+            own(m.id, p.main)
+            if (p.fileName)
+                fileNames[m.id] = p.fileName
+            if (m.content.document)
+                fileMime[m.id] = m.content.document.mime_type || ""
+        }
+        const words = store.plain(m.content)
         const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" ? m.reply_to : null
         let quote = null
         if (r && r.chat_id === chatId) {
@@ -245,7 +407,12 @@ Page {
             replyId: r ? r.message_id : 0,
             quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : ""),
             picKind: p.picKind, picW: p.picW, picH: p.picH, mini: p.mini, dur: p.dur, edge: 0,
-            pic: p.file && p.file.local.is_downloading_completed ? p.file.local.path : ""
+            pic: p.file && p.file.local.is_downloading_completed ? p.file.local.path : "",
+            rowKind: p.rowKind, fileName: p.fileName, fileSize: p.main ? (p.main.size || p.main.expected_size) : 0,
+            wave: p.wave, title: p.title, sub: p.sub, anim: p.anim, auto: p.auto,
+            got: p.main ? store.progress(p.main) : -1,
+            path: p.main && p.main.local.is_downloading_completed ? p.main.local.path : "",
+            jumbo: words !== null && !r ? store.emojiCount(words.trim()) : 0
         }
     }
 
@@ -407,8 +574,10 @@ Page {
                 acts.push({ text: "Javob berish", glyph: "↩", run: () => page.reply(m) })
             if (m.text)
                 acts.push({ text: "Nusxa olish", glyph: "⧉", run: () => page.copy(m.text) })
-            if (ok && p.can_be_edited && !m.kind)
+            if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
                 acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
+            if (page.mains[m.id] && !item.sending)
+                acts.push({ text: "Saqlash", glyph: "↓", run: () => page.save(m.id) })
             if (ok && p.can_be_deleted_only_for_self && p.can_be_deleted_for_all_users) {
                 acts.push({ text: "Men uchun o'chirish", glyph: "✕", danger: true,
                             run: () => store.deleteMessages(page.chatId, [m.id], false) })
@@ -454,6 +623,10 @@ Page {
 
     // the back button: the menu first, then a reply or edit being written (Main asks)
     function dismiss() {
+        if (sheet.open) {
+            sheet.close()
+            return true
+        }
         if (viewer.open) {
             viewer.close()
             return true
@@ -534,6 +707,27 @@ Page {
                 page.requote(id)
             }
         }
+        function onFileUpdated(f) {
+            const ids = page.fileMsgs[f.id]
+            if (!ids)
+                return
+            for (const id of ids) {
+                page.mains[id] = f
+                const i = page.indexOf(id)
+                if (i < 0)
+                    continue
+                const done = f.local.is_downloading_completed
+                messages.setProperty(i, "got", store.progress(f))
+                if (done && messages.get(i).path !== f.local.path)
+                    messages.setProperty(i, "path", f.local.path)
+                if (done && page.wantOpen === id) {
+                    page.wantOpen = 0
+                    const it = list.itemAtIndex(i)
+                    if (it)
+                        page.openMedia(it)
+                }
+            }
+        }
         function onMessageEdited(chatId, id, date) {
             if (chatId !== page.chatId)
                 return
@@ -609,11 +803,24 @@ Page {
                 required property string pic
                 required property int dur
                 required property int edge          // its older neighbour came: first and newDay again
+                required property string rowKind    // voice | audio | file: a row in the bubble
+                required property string fileName
+                required property real fileSize
+                required property string wave
+                required property string title
+                required property string sub
+                required property bool anim         // a video sticker: it plays as a GIF does
+                required property bool auto         // comes down by itself (GIFs, voice notes, round videos)
+                required property real got          // the file coming down or going up: how far, else -1
+                required property string path       // the file, here
+                required property int jumbo         // one to three emoji alone: big, no bubble
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
                 readonly property bool media: picKind !== ""
-                readonly property bool bare: picKind === "sticker" || picKind === "round"
+                readonly property bool bare: picKind === "sticker" || picKind === "round" || jumbo > 0
+                // on the screen (or nearly): only then a GIF plays
+                readonly property bool inSight: y + height > list.contentY - 200 && y < list.contentY + list.height + 200
                 readonly property real aspect: picH / picW
                 readonly property real pw: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
                                          : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
@@ -621,7 +828,12 @@ Page {
                                          : Math.max(110, Math.min(360, aspect * wide))
                 readonly property real wide: Math.min(width * 0.72, 270)
                 readonly property bool overlaid: media && text === ""     // the time over the picture
-                Component.onCompleted: if (media && !pic) page.loadPic(msgId)
+                Component.onCompleted: {
+                    if ((media || rowKind === "file") && !pic)
+                        page.loadPic(msgId)
+                    if (auto && !path && got < 0)
+                        page.download(msgId, false)
+                }
                 // a run: one sender's messages within 10 minutes of each other. Its first (the
                 // top) has the name and more space over it, its last (the bottom) the tail.
                 readonly property bool first: edge, page.apart(messages.get(index + 1), senderKey, date)
@@ -681,10 +893,13 @@ Page {
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
                         readonly property bool stampUnder: !item.overlaid && body.last + stampRoom > (item.media ? width : item.most) - 24
-                        width: item.bare ? item.pw : item.media ? item.pw + 6
+                        width: item.jumbo ? Math.max(body.implicitWidth, stamp.implicitWidth + 12) + 8
+                             : item.bare ? item.pw : item.media ? item.pw + 6
                              : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
+                                                            attach.visible ? attach.width : 0,
                                                             stampUnder ? stamp.implicitWidth : body.last + stampRoom) + 24)
-                        height: item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
+                        height: item.jumbo ? body.y + body.height + 26
+                              : item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
                               : body.y + body.height + (stampUnder ? 24 : 8)
 
                         Rectangle {     // while the stretched picture loads
@@ -715,7 +930,7 @@ Page {
                             onReleased: { sink.stop(); rise.restart() }
                             onCanceled: { sink.stop(); rise.restart() }
                             onPressAndHold: page.openMenu(item)
-                            onClicked: if (item.picKind === "photo") page.view(item)
+                            onClicked: if (item.media || item.rowKind) page.tapMedia(item)
                         }
                         ScaleAnimator { id: sink; target: bubble; to: 0.96; duration: 350; easing.type: Easing.OutQuad }
                         ScaleAnimator { id: rise; target: bubble; to: 1; duration: 150; easing.type: Easing.OutQuad }
@@ -788,12 +1003,41 @@ Page {
                                 opacity: status === Image.Ready ? 1 : 0
                                 Behavior on opacity { OpacityAnimator { duration: 150 } }
                             }
-                            Rectangle {     // a video or a GIF: play over it, its length in the corner
-                                visible: item.picKind === "video" || item.picKind === "gif"
+                            Loader {        // a GIF (or a video sticker) over and over; a round video tapped, once with sound
+                                id: moving
+                                anchors.fill: parent
+                                readonly property bool round: item.picKind === "round"
+                                active: item.path !== "" && page.visible && !viewer.open && item.inSight &&
+                                        (item.picKind === "gif" || item.anim || (round && page.roundId === item.msgId))
+                                // (handed through here: inside sourceComponent `item` is not the delegate)
+                                readonly property string file: item.path
+                                sourceComponent: InlineVideo {
+                                    path: moving.file
+                                    radius: Number(picture.corner)
+                                    sound: moving.round
+                                    loop: !moving.round
+                                    onEnded: if (moving.round) page.roundId = 0
+                                }
+                            }
+                            Rectangle {     // a video: play over it (the ring while it comes); a GIF: the ring
+                                visible: item.got >= 0 || (item.picKind === "video" || (item.picKind === "gif" && !item.path)
+                                                            || (item.picKind === "round" && page.roundId !== item.msgId))
                                 anchors.centerIn: parent
-                                width: 44; height: 44; radius: 22
+                                width: 48; height: 48; radius: 24
                                 color: Qt.rgba(0, 0, 0, 0.45)
-                                Text { anchors.centerIn: parent; anchors.horizontalCenterOffset: 2; text: "▶"; color: "white"; font.pixelSize: 18 }
+                                Icon {
+                                    visible: item.got < 0
+                                    anchors.centerIn: parent
+                                    anchors.horizontalCenterOffset: name === "play" ? 1.5 : 0
+                                    width: 24; height: 24
+                                    name: item.path || item.picKind === "video" ? "play" : "down"
+                                    color: "white"
+                                }
+                                Ring {
+                                    visible: item.got >= 0
+                                    anchors.fill: parent
+                                    value: item.got
+                                }
                             }
                             Rectangle {
                                 visible: item.picKind === "video" || item.picKind === "gif" || item.picKind === "round"
@@ -804,40 +1048,75 @@ Page {
                                     id: len
                                     anchors.centerIn: parent
                                     text: item.picKind === "gif" ? "GIF" : Math.floor(item.dur / 60) + ":" + String(item.dur % 60).padStart(2, "0")
+                                          + (item.picKind === "video" && !item.path && item.fileSize ? " · " + store.size(item.fileSize) : "")
                                     color: "white"
                                     font.family: Theme.font; font.pixelSize: 12
                                 }
                             }
                         }
+                        Item {          // a voice note, a song or a file
+                            id: attach
+                            visible: item.rowKind !== ""
+                            x: 12
+                            y: quote.visible ? quote.y + quote.height + 6 : who.visible ? who.y + who.height + 4 : 6
+                            width: item.rowKind === "file" ? fileRow.width : 230
+                            height: visible ? 50 : 0
+                            AudioRow {
+                                visible: item.rowKind === "voice" || item.rowKind === "audio"
+                                kind: item.rowKind === "audio" ? "audio" : "voice"
+                                out: item.out
+                                wave: item.wave
+                                dur: item.dur
+                                title: item.title
+                                sub: item.sub
+                                got: item.got
+                                here: item.path !== ""
+                                current: page.soundId === item.msgId
+                                playing: current && sound.playbackState === MediaPlayer.PlayingState
+                                at: current ? sound.position : 0
+                            }
+                            FileRow {
+                                id: fileRow
+                                visible: item.rowKind === "file"
+                                out: item.out
+                                name: item.fileName
+                                size: item.fileSize
+                                got: item.got
+                                here: item.path !== ""
+                                thumb: item.pic
+                            }
+                        }
                         Text {
                             id: body
                             visible: !item.overlaid
-                            x: 12
-                            y: item.media ? picture.y + picture.height + 5
-                             : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 2 : 8
-                            width: item.media ? bubble.width - 24 : Math.min(implicitWidth, item.most - 24)
+                            x: item.jumbo ? 4 : 12
+                            y: item.media ? picture.y + picture.height + 5 : attach.visible ? attach.y + attach.height + (text ? 4 : 0)
+                             : quote.visible ? quote.y + quote.height + 4 : who.visible ? who.y + who.height + 2 : item.jumbo ? 0 : 8
+                            height: attach.visible && !text ? 0 : implicitHeight
+                            width: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, Math.min(implicitWidth, item.most - 24))
+                                 : Math.min(implicitWidth, item.most - 24)
                             wrapMode: Text.Wrap
                             textFormat: Text.PlainText
                             property real last: 0       // the last line's width
                             onLineLaidOut: (line) => { if (line.isLast) last = line.implicitWidth }
                             text: (item.kind ? "[" + item.kind + "] " : "") + item.text
                             color: item.out ? Theme.outText : Theme.inText
-                            font.family: Theme.font; font.pixelSize: 16
+                            font.family: Theme.font; font.pixelSize: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
                         }
                         Rectangle {     // under the time when it is over a picture
-                            visible: item.overlaid
+                            visible: item.overlaid || item.jumbo > 0
                             anchors.fill: stamp; anchors.margins: -3; anchors.leftMargin: -6; anchors.rightMargin: -6
                             radius: height / 2
                             color: Qt.rgba(0, 0, 0, 0.4)
                         }
                         Text {
                             id: stamp
-                            anchors.right: parent.right; anchors.rightMargin: item.overlaid ? (item.bare ? 8 : 12) : 10
-                            anchors.bottom: parent.bottom; anchors.bottomMargin: item.overlaid ? (item.bare ? 6 : 10) : 6
+                            anchors.right: parent.right; anchors.rightMargin: item.overlaid || item.jumbo ? (item.bare ? 8 : 12) : 10
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6
                             textFormat: Text.StyledText
                             text: (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
-                                  (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid ? "white" : Theme.check) + "'>✓</font>") : "")
-                            color: item.overlaid ? "white" : item.out ? Theme.outMeta : Theme.inMeta
+                                  (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid || item.jumbo ? "white" : Theme.check) + "'>✓</font>") : "")
+                            color: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
                             font.family: Theme.font; font.pixelSize: 12
                         }
                     }
@@ -991,9 +1270,24 @@ Page {
                     MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: page.cancelCompose() }
                 }
             }
+            Icon {               // the clip: pictures and files from the phone
+                x: 12
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 16
+                width: 26; height: 26
+                name: "clip"
+                color: Theme.grey
+                visible: !page.editing
+                MouseArea {
+                    anchors.fill: parent; anchors.margins: -10
+                    onClicked: {
+                        Qt.inputMethod.hide()
+                        sheet.show()
+                    }
+                }
+            }
             Rectangle {
-                x: 10; y: compose.height + 8
-                width: parent.width - 66; height: parent.height - compose.height - 16
+                x: page.editing ? 10 : 48; y: compose.height + 8
+                width: parent.width - x - 56; height: parent.height - compose.height - 16
                 radius: 18
                 color: Theme.field
                 border.color: Theme.fieldBorder; border.width: 0.5
@@ -1012,15 +1306,71 @@ Page {
                     }
                 }
             }
-            Rectangle {
+            Rectangle {          // recording: the time, and how to let it go (over the field)
+                id: recBar
+                visible: page.recording
+                x: 0; y: compose.height
+                width: parent.width - 56; height: parent.height - compose.height
+                color: Theme.bar
+                Rectangle {
+                    id: dot
+                    x: 18; anchors.verticalCenter: parent.verticalCenter
+                    width: 10; height: 10; radius: 5
+                    color: Theme.danger
+                    SequentialAnimation on opacity {
+                        running: page.recording; loops: Animation.Infinite
+                        OpacityAnimator { from: 1; to: 0.2; duration: 500 }
+                        OpacityAnimator { from: 0.2; to: 1; duration: 500 }
+                    }
+                }
+                Text {
+                    x: 36; anchors.verticalCenter: parent.verticalCenter
+                    readonly property int tenths: Math.floor(page.recordMs / 100)
+                    text: Math.floor(tenths / 600) + ":" + String(Math.floor(tenths / 10) % 60).padStart(2, "0") + "," + tenths % 10
+                    color: Theme.text
+                    font.family: Theme.font; font.pixelSize: 16; font.features: { "tnum": 1 }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: parent.width - implicitWidth - 12 + Math.min(0, page.recordSlide)
+                    opacity: 1 - Math.min(0.8, -page.recordSlide / 150)
+                    text: page.recordSlide < -110 ? "Qo'yib yuboring — bekor bo'ladi" : "‹ bekor qilish uchun suring"
+                    color: page.recordSlide < -110 ? Theme.danger : Theme.grey
+                    font.family: Theme.font; font.pixelSize: 14
+                }
+            }
+            Rectangle {          // send (✓ for an edit); with the field empty, the mic: held, it records
+                id: sendButton
+                readonly property bool mic: !field.text.trim() && !page.editing
                 anchors.right: parent.right; anchors.rightMargin: 10
                 anchors.bottom: parent.bottom; anchors.bottomMargin: 10
                 width: 36; height: 36; radius: 18
-                color: field.text.trim() ? Theme.accent : Theme.mutedBadge
-                Text { anchors.centerIn: parent; text: page.editing ? "✓" : "↑"; color: "white"; font.pixelSize: 20; font.weight: Font.Bold }
+                color: mic ? (page.recording ? Theme.danger : "transparent") : field.text.trim() ? Theme.accent : Theme.mutedBadge
+                scale: page.recording ? 1.6 : 1
+                Behavior on scale { ScaleAnimator { duration: 200; easing.type: Easing.OutBack } }
+                Icon {
+                    visible: sendButton.mic
+                    anchors.centerIn: parent
+                    width: 26; height: 26
+                    name: "mic"
+                    color: page.recording ? "white" : Theme.grey
+                }
+                Text { visible: !sendButton.mic; anchors.centerIn: parent; text: page.editing ? "✓" : "↑"; color: "white"; font.pixelSize: 20; font.weight: Font.Bold }
                 MouseArea {
                     anchors.fill: parent; anchors.margins: -6
+                    property real startX: 0
+                    onPressed: (m) => {
+                        if (!sendButton.mic)
+                            return
+                        startX = m.x
+                        page.startVoice()
+                    }
+                    onPositionChanged: (m) => { if (page.recording) page.recordSlide = m.x - startX }
+                    onReleased: if (page.recording) page.stopVoice(page.recordSlide < -110)
+                    onCanceled: if (page.recording) page.stopVoice(true)
                     onClicked: {
+                        if (sendButton.mic)
+                            return
                         const t = field.text.trim()
                         if (!t)
                             return
@@ -1044,7 +1394,122 @@ Page {
         }
     }
 
-    PhotoViewer { id: viewer }
+    PhotoViewer {
+        id: viewer
+        onSave: if (page.viewing) page.save(page.viewing)
+    }
+
+    AttachSheet {
+        id: sheet
+        onSend: (picked) => {
+            if (page.gap)
+                page.fresh()
+            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0)
+            field.text = ""
+            page.replying = null
+            list.down = true
+            list.positionViewAtBeginning()
+        }
+    }
+
+    Rectangle {          // a word that comes and goes (saved, no mic)
+        id: toastBox
+        z: 25
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: bar.height + 12
+        width: Math.min(parent.width - 40, toastText.implicitWidth + 28); height: toastText.implicitHeight + 16
+        radius: height / 2
+        color: Qt.rgba(0, 0, 0, 0.75)
+        opacity: 0
+        visible: opacity > 0
+        Behavior on opacity { OpacityAnimator { duration: 200 } }
+        Text {
+            id: toastText
+            anchors.centerIn: parent
+            width: Math.min(implicitWidth, parent.parent.width - 68)
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            color: "white"
+            font.family: Theme.font; font.pixelSize: 14
+        }
+    }
+    Timer { id: toastAway; interval: 2200; onTriggered: toastBox.opacity = 0 }
+
+    // ---- a voice note ----------------------------------------------------------
+    // held: it records (Ogg Opus, what Telegram's voice notes are); let go: it is sent, its
+    // waveform worked out from the file (td.voice); slid left: thrown away
+    property bool recording: false
+    property real recordMs: 0
+    property real recordSlide: 0
+    property bool recordCancel: false
+    property real recordFrom: 0
+    MediaDevices { id: devices }
+    Timer {
+        interval: 100; repeat: true; running: page.recording
+        onTriggered: page.recordMs = Date.now() - page.recordFrom
+    }
+    Timer {             // Telegram shows "ovozli xabar yozmoqda" while it lasts: say it again now and then
+        interval: 4000; repeat: true; running: page.recording
+        onTriggered: page.acting("chatActionRecordingVoiceNote")
+    }
+    function acting(what) {
+        store.send({ "@type": "sendChatAction", chat_id: chatId, action: what ? { "@type": what } : null })
+    }
+    function startVoice() {
+        if (devices.audioInputs.length === 0) {
+            toast("Mikrofon topilmadi — telefonning mikrofoni hali ulanmagan")
+            return
+        }
+        sound.pause()
+        roundId = 0
+        recordCancel = false
+        recordSlide = 0
+        recordMs = 0
+        recordFrom = Date.now()
+        recorder.outputLocation = "file://" + td.voicePath()
+        recording = true
+        recorder.record()
+        acting("chatActionRecordingVoiceNote")
+    }
+    function stopVoice(cancel) {
+        recordCancel = cancel || Date.now() - recordFrom < 700     // a tap is not a voice note
+        if (recordCancel && Date.now() - recordFrom < 700)
+            toast("Ovozli xabar uchun tugmani bosib turing")
+        recording = false
+        recorder.stop()
+        acting("")
+    }
+    function recorded() {
+        const at = String(recorder.actualLocation).replace(/^file:\/\//, "")
+        if (recordCancel || !at)
+            return
+        const v = td.voice(at)
+        if (page.gap)
+            page.fresh()
+        store.sendVoice(chatId, at, v.duration, v.waveform, replying ? replying.id : 0)
+        replying = null
+        list.down = true
+        list.positionViewAtBeginning()
+    }
+    CaptureSession {
+        audioInput: AudioInput {}
+        recorder: MediaRecorder {
+            id: recorder
+            mediaFormat {
+                fileFormat: MediaFormat.Ogg
+                audioCodec: MediaFormat.AudioCodec.Opus
+            }
+            audioChannelCount: 1
+            audioSampleRate: 48000
+            audioBitRate: 32000
+            encodingMode: MediaRecorder.ConstantBitRateEncoding
+            onRecorderStateChanged: if (recorderState === MediaRecorder.StoppedState) page.recorded()
+            onErrorOccurred: (error, text) => {
+                page.recording = false
+                page.toast("Yozib bo'lmadi: " + text)
+            }
+        }
+    }
 
     MessageMenu {
         id: menu

@@ -32,6 +32,7 @@ QtObject {
     signal messageEdited(var chatId, var id, var date)
     signal readOutbox(var chatId, var lastRead)
     signal chatChanged(var chatId)      // fields of a chat changed (an open chat page reads them again)
+    signal fileUpdated(var f)           // a file is coming or going: how far, or done
 
     // ---- talking to TDLib ----------------------------------------------------
     function send(req, done) {
@@ -495,6 +496,7 @@ QtObject {
     }
 
     function file(f) {
+        fileUpdated(f)
         const w = _waiters[f.id]
         if (w && f.local.is_downloading_completed) {
             delete _waiters[f.id]
@@ -512,6 +514,27 @@ QtObject {
                 refresh(c)
             }
         }
+    }
+
+    // how far a file is, 0..1, while it comes down or goes up; -1 when neither
+    function progress(f) {
+        const all = f.size || f.expected_size
+        if (f.local.is_downloading_active)
+            return all ? f.local.downloaded_size / all : 0
+        if (f.remote.is_uploading_active)
+            return all ? f.remote.uploaded_size / all : 0
+        return -1
+    }
+
+    function stopFile(f) {
+        delete _waiters[f.id]
+        send({ "@type": "cancelDownloadFile", file_id: f.id, only_if_pending: false })
+    }
+
+    // 1234567 -> "1.2 MB"
+    function size(n) {
+        return n < 1024 ? n + " B" : n < 1048576 ? Math.round(n / 1024) + " KB"
+             : n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB"
     }
 
     // ---- messages --------------------------------------------------------------
@@ -543,6 +566,79 @@ QtObject {
         if (replyTo)
             req.reply_to = { "@type": "inputMessageReplyToMessage", message_id: replyTo }
         send(req, check)
+    }
+
+    // files from the phone (td.recent's): pictures and videos together as an album when there are
+    // several, the rest one by one; the field's words go under the first
+    function sendFiles(chatId, files, caption, replyTo) {
+        const text = { "@type": "formattedText", text: caption || "" }
+        const contents = files.map((f, k) => {
+            const local = { "@type": "inputFileLocal", path: f.path }
+            const c = k === 0 ? text : null
+            if (f.kind === "photo" && !f.path.toLowerCase().endsWith(".gif"))
+                return { "@type": "inputMessagePhoto", photo: local, width: f.w, height: f.h, caption: c }
+            if (f.kind === "video") {
+                const v = td.probe(f.path)
+                return { "@type": "inputMessageVideo", video: local, duration: v.duration, width: v.width,
+                         height: v.height, supports_streaming: true, caption: c }
+            }
+            if (f.kind === "audio")
+                return { "@type": "inputMessageAudio", audio: local, duration: td.probe(f.path).duration, caption: c }
+            return { "@type": "inputMessageDocument", document: local, caption: c }
+        })
+        const reply = replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null
+        const album = contents.filter((c) => c["@type"] === "inputMessagePhoto" || c["@type"] === "inputMessageVideo")
+        const rest = contents.filter((c) => album.indexOf(c) < 0)
+        if (album.length > 1) {
+            for (let k = 0; k < album.length; k += 10)
+                send({ "@type": "sendMessageAlbum", chat_id: chatId, reply_to: k ? null : reply,
+                       input_message_contents: album.slice(k, k + 10) }, check)
+        } else {
+            rest.unshift(...album)
+        }
+        for (const c of rest)
+            send({ "@type": "sendMessage", chat_id: chatId, reply_to: reply, input_message_content: c }, check)
+    }
+
+    function sendVoice(chatId, path, duration, waveform, replyTo) {
+        send({ "@type": "sendMessage", chat_id: chatId,
+               reply_to: replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null,
+               input_message_content: { "@type": "inputMessageVoiceNote",
+                                        voice_note: { "@type": "inputFileLocal", path: path },
+                                        duration: duration, waveform: waveform } }, check)
+    }
+
+    // a text that is one to three emoji and nothing else: how many (it shows big, without a
+    // bubble, as Telegram does), else 0
+    function emojiCount(t) {
+        if (!t || t.length > 48)
+            return 0
+        let n = 0, joined = false, flags = 0
+        for (const ch of t) {
+            const c = ch.codePointAt(0)
+            if (c === 0x200d) {
+                joined = true
+                continue
+            }
+            if (c === 0xfe0f || c === 0xfe0e || c === 0x20e3 || (c >= 0x1f3fb && c <= 0x1f3ff) || (c >= 0xe0020 && c <= 0xe007f))
+                continue
+            if (c >= 0x1f1e6 && c <= 0x1f1ff) {     // a flag is two of these
+                if (flags++ % 2 === 0)
+                    n++
+                continue
+            }
+            if (!pictograph(c))
+                return 0
+            if (!joined)
+                n++
+            joined = false
+        }
+        return n <= 3 ? n : 0
+    }
+    function pictograph(c) {
+        return (c >= 0x1f000 && c <= 0x1faff) || (c >= 0x2600 && c <= 0x27bf) || (c >= 0x2300 && c <= 0x23ff)
+            || (c >= 0x2b00 && c <= 0x2bff) || (c >= 0x2190 && c <= 0x21ff) || (c >= 0x25a0 && c <= 0x25ff)
+            || [0xa9, 0xae, 0x203c, 0x2049, 0x2122, 0x2139, 0x24c2, 0x3030, 0x303d, 0x3297, 0x3299].indexOf(c) >= 0
     }
 
     function editText(chatId, messageId, text) {

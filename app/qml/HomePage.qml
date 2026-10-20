@@ -24,6 +24,25 @@ Page {
         }
     }
 
+    // NULLGRAM_OPEN=<chat id> or "me" (testing from the PC): that chat at once
+    Timer {
+        running: td.devOpen !== ""
+        interval: 1500
+        onTriggered: {
+            const me = home.store.me
+            if (td.devOpen === "me" && me)
+                home.store.chatWith(me.id, (id) => home.nav.push(devChat, { chatId: id }))
+            else if (td.devOpen !== "me")
+                home.store.send({ "@type": "getChat", chat_id: Number(td.devOpen) }, (c) => {
+                    if (c["@type"] === "chat")
+                        home.nav.push(devChat, { chatId: c.id })
+                })
+            else
+                restart()
+        }
+    }
+    Component { id: devChat; ChatPage {} }
+
     function dismiss() {
         if (tab === 1 && chats.dismiss())
             return true

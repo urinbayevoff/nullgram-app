@@ -60,6 +60,38 @@ Page {
                 }
             }
 
+            Rectangle {      // Saved Messages: one's own chat, as Telegram-iOS's settings open it
+                x: 16; width: parent.width - 32
+                height: 50
+                radius: 12
+                color: saved.pressed ? Theme.highlight : Theme.dark ? "#1c1c1d" : "#f2f2f7"
+                Rectangle {
+                    x: 12; anchors.verticalCenter: parent.verticalCenter
+                    width: 30; height: 30; radius: 7
+                    color: "#2a9ef1"
+                    Text { anchors.centerIn: parent; text: "🔖"; font.pixelSize: 15 }
+                }
+                Text {
+                    x: 54; anchors.verticalCenter: parent.verticalCenter
+                    text: "Saqlangan xabarlar"
+                    color: Theme.text
+                    font.family: Theme.font; font.pixelSize: 16
+                }
+                Text {
+                    anchors.right: parent.right; anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "›"
+                    color: Theme.grey
+                    font.family: Theme.font; font.pixelSize: 22
+                }
+                MouseArea {
+                    id: saved
+                    anchors.fill: parent
+                    onClicked: if (page.me) store.chatWith(page.me.id, (id) => page.nav.push(chatPage, { chatId: id }))
+                }
+            }
+            Item { width: 1; height: 20 }
+
             Rectangle {      // a group of rows, rounded, as iOS lists settings
                 x: 16; width: parent.width - 32
                 height: rows.height
@@ -113,4 +145,6 @@ Page {
             }
         }
     }
+
+    Component { id: chatPage; ChatPage {} }
 }

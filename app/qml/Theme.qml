@@ -29,6 +29,10 @@ QtObject {
     readonly property color inMeta: dark ? Qt.rgba(1, 1, 1, 0.5) : "#8e8e93"
     readonly property color outMeta: dark ? Qt.rgba(1, 1, 1, 0.65) : Qt.rgba(0, 0.549, 0.035, 0.8)
     readonly property color check: dark ? "#ffffff" : "#19c700"
+    // a voice note's button and waveform (Telegram-iOS: the bubble's accent, faint where not yet played)
+    readonly property color voiceOut: dark ? "#ffffff" : "#3fc33b"
+    readonly property color voiceOutFaint: dark ? Qt.rgba(1, 1, 1, 0.4) : Qt.rgba(0.25, 0.76, 0.23, 0.35)
+    readonly property color voiceInFaint: dark ? Qt.rgba(1, 1, 1, 0.25) : Qt.rgba(0, 0.53, 1, 0.3)
     // the chat's wallpaper: Telegram's default four colours (dark: a night version of them)
     readonly property string wall: dark ? "1b2b23,16241c,2b3423,1f3022" : "dbddbb,6ba587,d5d88d,88b884"
     readonly property string font: "Adwaita Sans"
