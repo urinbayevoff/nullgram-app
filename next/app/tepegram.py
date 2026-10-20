@@ -18,7 +18,7 @@ import threading
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
 from PySide6.QtCore import Property, QObject, QRectF, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QGuiApplication, QImage, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -113,6 +113,53 @@ class Round(QQuickImageProvider):
 		return out
 
 
+class Bubble(QQuickImageProvider):
+	"""image://bubble/<in|out>/<top: b|s>/<bottom: t|s>/<rrggbb>/<scale>: a message bubble to stretch
+	(BorderImage, borders R and R + TAIL on the tail's side), as Telegram-iOS draws them from
+	stretchable images (ChatMessageBubbleImages.swift): big corners, small ones on the side where the
+	sender's messages run together, and the tail under the last of a run."""
+	R, SMALL, TAIL = 17, 6, 6
+
+	def __init__(self):
+		super().__init__(QQuickImageProvider.Image)
+
+	def requestImage(self, key, size, requested):
+		side, top, bottom, colour, scale = key.split("/")
+		s = float(scale)
+		R, r, T = self.R, self.SMALL, self.TAIL
+		w, h = T + 2 * R + 2, 2 * R + 2
+		img = QImage(int(w * s), int(h * s), QImage.Format_ARGB32_Premultiplied)
+		img.fill(Qt.transparent)
+		p = QPainter(img)
+		p.setRenderHint(QPainter.Antialiasing)
+		p.scale(s, s)
+		if side == "out":		# drawn as an incoming one, mirrored: the tail on the right
+			p.translate(w, 0)
+			p.scale(-1, 1)
+		rt = R if top == "b" else r		# the sender's side, top
+		x0, x1 = T, w
+		path = QPainterPath()
+		path.moveTo(x0 + rt, 0)
+		path.lineTo(x1 - R, 0)
+		path.quadTo(x1, 0, x1, R)
+		path.lineTo(x1, h - R)
+		path.quadTo(x1, h, x1 - R, h)
+		if bottom == "t":		# the tail: out of the bottom corner, a point to the side
+			path.lineTo(x0 + 10, h)
+			path.cubicTo(x0 + 6.5, h, x0 + 3.5, h - 1.2, x0 + 2, h - 2.4)
+			path.cubicTo(x0 - 0.5, h - 0.2, x0 - 3.5, h + 0.1, 0, h - 0.3)
+			path.cubicTo(x0 - 1.2, h - 2, x0, h - 4.5, x0, h - 9)
+		else:
+			path.lineTo(x0 + r, h)
+			path.quadTo(x0, h, x0, h - r)
+		path.lineTo(x0, rt)
+		path.quadTo(x0, 0, x0 + rt, 0)
+		p.fillPath(path, QColor("#" + colour))
+		p.end()
+		img.setDevicePixelRatio(s)
+		return img
+
+
 class Wall(QQuickImageProvider):
 	"""image://wall/<rrggbb,rrggbb,rrggbb,rrggbb>: Telegram's freeform wallpaper, its four colours
 	blended by nearness (weight max(0, 0.9 - d)^4), small: drawn large it stays smooth."""
@@ -143,6 +190,7 @@ def main():
 	view.rootContext().setContextProperty("td", td)
 	view.engine().addImageProvider("round", Round())
 	view.engine().addImageProvider("wall", Wall())
+	view.engine().addImageProvider("bubble", Bubble())
 	view.setResizeMode(QQuickView.SizeRootObjectToView)
 	view.setSource(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
 	if view.status() == QQuickView.Error:

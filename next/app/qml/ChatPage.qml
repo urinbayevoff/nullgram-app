@@ -2,6 +2,7 @@
 // under them. It is `ready` once its newest messages are laid out, so the push
 // moves a finished page.
 import QtQuick
+import QtQuick.Window
 
 Page {
     id: page
@@ -46,6 +47,10 @@ Page {
             time: Qt.formatTime(new Date(m.date * 1000), "HH:mm"),
             views: m.interaction_info ? m.interaction_info.view_count : 0
         }
+    }
+
+    function apart(other, senderKey, date) {
+        return !other || other.senderKey !== senderKey || Math.abs(other.date - date) > 600
     }
 
     function read(msgs) {
@@ -121,19 +126,37 @@ Page {
             required property string time
             required property bool sending
             required property int views
-            // the next one up is from someone else: this one starts a run (name over it, more space)
-            readonly property bool first: index === messages.count - 1 || messages.get(index + 1).senderKey !== senderKey
+            required property int date
+            // a run: one sender's messages within 10 minutes of each other. Its first (the
+            // top) has the name and more space over it, its last (the bottom) the tail.
+            readonly property bool first: page.apart(messages.get(index + 1), senderKey, date)
+            readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
             width: list.width
-            height: bubble.height + (first ? 8 : 3)
+            height: bubble.height + (first ? 8 : 2)
 
-            Rectangle {
+            Item {
                 id: bubble
-                y: item.first ? 6 : 1
-                x: item.out ? item.width - width - 10 : 10
+                y: item.first ? 8 : 2
+                x: item.out ? item.width - width - 8 - 6 : 8 + 6
                 width: Math.min(item.width * 0.78, Math.max(body.implicitWidth, who.implicitWidth, stamp.implicitWidth + 10) + 24)
                 height: (who.visible ? who.height + 2 : 0) + body.height + 16
-                radius: 17
-                color: item.out ? Theme.bubbleOut : Theme.bubbleIn
+
+                Rectangle {     // until the stretched picture works (it does not load yet: see STATUS)
+                    anchors.fill: parent
+                    visible: shape.status !== Image.Ready
+                    radius: 17
+                    color: item.out ? Theme.bubbleOut : Theme.bubbleIn
+                }
+                BorderImage {   // the bubble, stretched from a small picture (tepegram.py Bubble)
+                    id: shape
+                    anchors.fill: parent
+                    anchors.leftMargin: item.out ? 0 : -6
+                    anchors.rightMargin: item.out ? -6 : 0
+                    border { left: item.out ? 17 : 23; right: item.out ? 23 : 17; top: 17; bottom: 17 }
+                    source: "image://bubble/" + (item.out ? "out/" : "in/") + (item.first ? "b/" : "s/") + (item.last ? "t/" : "s/")
+                            + String(item.out ? Theme.bubbleOut : Theme.bubbleIn).slice(1) + "/" + Screen.devicePixelRatio
+                    smooth: true
+                }
 
                 Text {
                     id: who
