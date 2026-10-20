@@ -90,6 +90,7 @@ Page {
     // what a message shows as a picture: its kind, size, Telegram's tiny preview, and the file
     // to show (the photo's size nearest 640 px, else a video's or a sticker's still)
     property var files: ({})         // message id -> the picture's file
+    property var bigFiles: ({})      // message id -> the photo's biggest size (full screen)
     function media(c) {
         const t = c["@type"]
         const r = { picKind: "", picW: 1, picH: 1, mini: "", dur: 0, file: null }
@@ -102,6 +103,7 @@ Page {
                     break
                 }
             Object.assign(r, { picKind: "photo", picW: best.width, picH: best.height, file: best.photo,
+                               big: sizes[sizes.length - 1].photo,
                                mini: c.photo.minithumbnail ? c.photo.minithumbnail.data : "" })
         } else if (t === "messageVideo" || t === "messageAnimation") {
             const v = t === "messageVideo" ? c.video : c.animation
@@ -119,6 +121,16 @@ Page {
         return r
     }
 
+    // a photo full screen, out of its bubble; the biggest size comes in when downloaded
+    function view(item) {
+        const src = item.pic ? "image://pic/0/" + Math.round(item.pw) + "/" + item.pic
+                  : item.mini ? "image://pic/0/" + Math.round(item.pw) + "/mini/" + item.mini : ""
+        viewer.show(item.picFace, item.aspect, src)
+        const f = bigFiles[item.msgId]
+        if (f)
+            store.fetch(f, 32, (path) => viewer.better(path))
+    }
+
     function loadPic(id) {
         const f = files[id]
         if (f)
@@ -134,6 +146,8 @@ Page {
         const p = media(m.content)
         if (p.file)
             files[m.id] = p.file
+        if (p.big)
+            bigFiles[m.id] = p.big
         const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" ? m.reply_to : null
         let quote = null
         if (r && r.chat_id === chatId) {
@@ -288,6 +302,10 @@ Page {
 
     // the back button: the menu first, then a reply or edit being written (Main asks)
     function dismiss() {
+        if (viewer.open) {
+            viewer.close()
+            return true
+        }
         if (menu.open) {
             menu.close()
             return true
@@ -432,6 +450,7 @@ Page {
                 required property string pic
                 required property int dur
                 readonly property Item face: bubble
+                readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
                 readonly property bool media: picKind !== ""
                 readonly property bool bare: picKind === "sticker" || picKind === "round"
@@ -516,6 +535,7 @@ Page {
                             onReleased: { sink.stop(); rise.restart() }
                             onCanceled: { sink.stop(); rise.restart() }
                             onPressAndHold: page.openMenu(item)
+                            onClicked: if (item.picKind === "photo") page.view(item)
                         }
                         ScaleAnimator { id: sink; target: bubble; to: 0.96; duration: 350; easing.type: Easing.OutQuad }
                         ScaleAnimator { id: rise; target: bubble; to: 1; duration: 150; easing.type: Easing.OutQuad }
@@ -793,6 +813,8 @@ Page {
             }
         }
     }
+
+    PhotoViewer { id: viewer }
 
     MessageMenu {
         id: menu

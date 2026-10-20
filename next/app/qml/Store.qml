@@ -38,7 +38,8 @@ QtObject {
             req["@extra"] = String(_seq)
             _calls[req["@extra"]] = done
         }
-        td.send(JSON.stringify(req))
+        if (td)         // (gone while the app quits)
+            td.send(JSON.stringify(req))
     }
 
     property Connections _td: Connections {
