@@ -2,7 +2,9 @@
 // name and time on one line, two lines of the last message under it, the unread
 // count in a pill. A tap lights the row at once; the chat comes in when it is ready.
 // Over the list, as on iOS 26: the title in the middle and the search box under it; a tap
-// on the box turns the page into the search (SearchView).
+// on the box turns the page into the search (SearchView). Under it the chat folders (IMG_0295): a
+// capsule of chips, the one shown on grey with its unread count; a sideways swipe on the list
+// goes to the next or the one before.
 import QtQuick
 
 Page {
@@ -13,6 +15,30 @@ Page {
 
     function toTop() {
         list.positionViewAtBeginning()
+    }
+
+    // the folders as the chips show them: all chats first
+    readonly property var tabs: [{ id: 0, name: "Hammasi" }].concat(store.folders)
+    readonly property int tabIndex: Math.max(0, tabs.findIndex((t) => t.id === store.folder))
+    function go(i) {
+        if (i < 0 || i >= tabs.length || tabs[i].id === store.folder)
+            return
+        store.showFolder(tabs[i].id)
+        fadeIn.restart()
+    }
+    OpacityAnimator { id: fadeIn; target: list; from: 0.3; to: 1; duration: 180; easing.type: Easing.OutQuad }
+
+    // TDLib counts a folder's unread chats once the folder is loaded: load each a little
+    property bool countsAsked: false
+    Connections {
+        target: store
+        function onFoldersChanged() {
+            if (page.countsAsked || !store.folders.length)
+                return
+            page.countsAsked = true
+            for (const f of store.folders)
+                store.send({ "@type": "loadChats", chat_list: { "@type": "chatListFolder", chat_folder_id: f.id }, limit: 20 })
+        }
     }
     function dismiss() {
         if (searching) {
@@ -31,7 +57,7 @@ Page {
         maximumFlickVelocity: 6000
         flickDeceleration: 2200
         header: Item {
-            width: list.width; height: 104
+            width: list.width; height: 104 + (store.folders.length ? 52 : 0)
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: 16
@@ -54,6 +80,60 @@ Page {
                     }
                 }
                 MouseArea { anchors.fill: parent; onClicked: search.show() }
+            }
+            Rectangle {          // the folders
+                visible: store.folders.length > 0
+                x: 12; y: 100
+                width: parent.width - 24; height: 44; radius: 22
+                color: Theme.bg
+                border.color: Theme.fieldBorder; border.width: 0.5
+                ListView {
+                    id: chips
+                    anchors.fill: parent; anchors.margins: 4
+                    orientation: ListView.Horizontal
+                    clip: true
+                    spacing: 2
+                    model: page.tabs
+                    currentIndex: page.tabIndex
+                    onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                    highlightFollowsCurrentItem: true
+                    highlightMoveDuration: 250
+                    highlightResizeDuration: 250
+                    highlight: Rectangle { radius: 18; color: Theme.highlight }
+                    delegate: Item {
+                        id: chip
+                        required property var modelData
+                        required property int index
+                        readonly property int unread: modelData.id ? (store.folderUnread[modelData.id] || 0) : store.unreadChats
+                        width: label.implicitWidth + (badge.visible ? badge.width + 6 : 0) + 28; height: 36
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Text {
+                                id: label
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: chip.modelData.name
+                                color: Theme.text
+                                font.family: Theme.font; font.pixelSize: 15; font.weight: chip.index === page.tabIndex ? Font.DemiBold : Font.Normal
+                            }
+                            Rectangle {
+                                id: badge
+                                visible: chip.unread > 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.max(20, n.implicitWidth + 10); height: 20; radius: 10
+                                color: Theme.mutedBadge
+                                Text {
+                                    id: n
+                                    anchors.centerIn: parent
+                                    text: store.count(chip.unread)
+                                    color: "white"
+                                    font.family: Theme.font; font.pixelSize: 12; font.weight: Font.DemiBold
+                                }
+                            }
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: page.go(chip.index) }
+                    }
+                }
             }
         }
         footer: Item { width: 1; height: 90 }      // room over the tab bar
@@ -147,6 +227,29 @@ Page {
                 }
             }
             Timer { id: unlight; interval: 600; onTriggered: row.lit = false }
+        }
+    }
+
+    // sideways over the rows: the next folder, or the one before. Over the list, not in it: a row's
+    // MouseArea takes the press, and a handler under it would never see it. It begins under the
+    // folder chips (they scroll sideways themselves).
+    Item {
+        y: Math.max(0, list.headerItem ? list.headerItem.height - (list.contentY - list.originY) : 0)
+        width: parent.width; height: parent.height - y
+        enabled: store.folders.length > 0 && !page.searching
+        DragHandler {
+            target: null
+            xAxis.enabled: true
+            yAxis.enabled: false
+            // (the translation is back at 0 by the time it lets go: kept while it moves)
+            property real dx: 0
+            onActiveTranslationChanged: if (active) dx = activeTranslation.x
+            onActiveChanged: {
+                if (active)
+                    dx = 0
+                else if (Math.abs(dx) > 70)
+                    page.go(page.tabIndex + (dx < 0 ? 1 : -1))
+            }
         }
     }
 
