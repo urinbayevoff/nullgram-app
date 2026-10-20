@@ -1,7 +1,9 @@
 """Runs proto.qml; at exit prints which thread drew and the gaps between frames
 while something moved (frames more than 100 ms apart start a new run).
 --busy: the UI thread's Python busy 30 ms of every 40 (as building bubbles is) -- the motion should not care.
---secs N: quit after N seconds."""
+--secs N: quit after N seconds.
+--busythread: the same Python work on a thread of its own (the UI thread runs no Python).
+--auto: push or pop the chat every second, no touch needed."""
 import sys
 import threading
 import time
@@ -59,4 +61,16 @@ if "--busy" in sys.argv:
 	busy = QTimer()
 	busy.timeout.connect(hog)
 	busy.start(40)
+if "--busythread" in sys.argv:
+	def hogs():
+		while True:
+			end = time.perf_counter() + 0.03
+			while time.perf_counter() < end:
+				pass
+			time.sleep(0.01)
+	threading.Thread(target=hogs, daemon=True).start()
+if "--auto" in sys.argv:
+	auto = QTimer()
+	auto.timeout.connect(lambda: view.rootObject().toggle())
+	auto.start(1000)
 sys.exit(app.exec())

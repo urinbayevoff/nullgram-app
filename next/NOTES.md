@@ -61,13 +61,24 @@ Runs fullscreen under ztmetro (`QT_QPA_PLATFORM=wayland`). `threaded render loop
 Push/pop with XAnimator/OpacityAnimator (render thread; NumberAnimation would run on the UI
 thread with Python): calm 59–63 fps by frameSwapped, median 16.7 ms. With the UI thread's Python
 busy 30 ms of 40: sync=0 for animator frames, but 11–16 frames over 20 ms per motion (look into).
-Qt renders ~120 frames/s (swap 5 ms, not blocking): frames are not paced to the 60 Hz screen —
-fix (frame callbacks / swap interval) before judging smoothness by eye.
+**Pacing is right** (checked 2026-10-20 with WAYLAND_DEBUG): Qt asks `wl_surface.frame` before every
+commit and ztmetro answers once per output frame, so commits are 16–17 ms apart (the panel has one
+mode, 1440×3040 **60.00 Hz** — `modetest -c`; no higher rate on the S10 5G). The "~120/s" was Qt's
+log and the Python hooks on the render thread, not real frames.
+**Slow frames** (`proto.py --auto --qt` + `/tmp/gaps.sh`: commit gaps from the Wayland trace, 5–6
+push/pops, ~176 frames): calm 2–3 over 20 ms; with 30 ms of Python per 40 ms on the UI thread
+(`--busy`) 13; on a thread of its own (`--busythread`) 7–10 — so it is not the GIL but CPU load
+(the TDLib build ran on 2 cores at the time). They fall at frames 1–2 of a motion (the page's
+delegates made as it turns visible; the CPU still slow: `zgov`, OmonullOS's user-space governor,
+looks every 250 ms and steps up only then) and at frames 31–34 (the animators' end: values
+written back, bindings, a sync) where the spring has already come to rest, so it is not seen.
+For the app: make pages before they move (as v0.5 did), and ask zgov for a touch boost
+(input or a ztmetro animation → clusters at their caps for ~1 s; needs root to install).
 Measure: `QT_FORCE_STDERR_LOGGING=1 QT_LOGGING_RULES="qt.scenegraph.time.renderloop=true"`
 (Qt logs to journald otherwise); never time with Python slots on the render thread (GIL).
 Rule for the app: no Python connected to render-thread signals.
 
 ## Next
-- TDLib on the phone: needs `sudo pacman -S --needed cmake gperf` (owner's password), then build.
+- TDLib on the phone: building (`~/build/td/build.log`).
 - Remaining videos (0297 channels/media, 0298 settings, 0299 writing, 0300 context menu).
 - Spring as a render-thread easing: fit a BezierSpline to 1 − (1 + ωt)e^(−ωt), or a custom Animator.

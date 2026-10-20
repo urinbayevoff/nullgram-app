@@ -104,6 +104,8 @@ Rectangle {
         }
     }
 
+    function toggle() { nav.go(chat.x < root.width / 2 ? 0 : 1, 500, root.spring) }   // proto.py --auto
+
     QtObject {
         id: nav
         // progress p: 0 the list alone, 1 the chat over it
