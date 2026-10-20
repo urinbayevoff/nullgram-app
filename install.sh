@@ -36,7 +36,7 @@ cat > "$a" <<'E'
 #!/bin/sh
 # one at a time: a second tap only brings the running one back (the shell does that by its window)
 pgrep -f '[n]ullgram/nullgram.py' >/dev/null && exit 0
-export QT_QPA_PLATFORM=wayland
+export QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1	# started by the shell, Qt would log to journald
 exec python3 "$HOME/nullgram/nullgram.py" "$@" > /tmp/nullgram.log 2>&1
 E
 chmod 755 "$a"

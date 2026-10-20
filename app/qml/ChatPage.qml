@@ -49,6 +49,8 @@ Page {
                 })
         }
         store.history(chatId, 0, 30, (got) => {
+            if (!page)          // closed before TDLib answered
+                return
             page.add(got)
             page.ready = true
             page.read(got)
@@ -73,10 +75,11 @@ Page {
 
     function shown(content) {
         const t = content["@type"]
+        const words = store.plain(content)
         return {
-            text: t === "messageText" ? content.text.text : (content.caption ? content.caption.text : ""),
-            kind: t === "messageText" || pictured.indexOf(t) >= 0 ? ""
-                : store.kinds[t] || "Bu turdagi xabar hali yo'q"
+            text: words !== null ? words : (content.caption ? content.caption.text : ""),
+            kind: words !== null || pictured.indexOf(t) >= 0 ? ""
+                : store.kindOf(t)
         }
     }
 
@@ -128,13 +131,15 @@ Page {
         viewer.show(item.picFace, item.aspect, src)
         const f = bigFiles[item.msgId]
         if (f)
-            store.fetch(f, 32, (path) => viewer.better(path))
+            store.fetch(f, 32, (path) => { if (page) viewer.better(path) })
     }
 
     function loadPic(id) {
         const f = files[id]
         if (f)
             store.fetch(f, 1, (path) => {
+                if (!page)
+                    return
                 const i = page.indexOf(id)
                 if (i >= 0)
                     messages.setProperty(i, "pic", path)
@@ -178,6 +183,8 @@ Page {
             return
         asked[id] = true
         store.send({ "@type": "getMessage", chat_id: chatId, message_id: id }, (m) => {
+            if (!page)
+                return
             if (m["@type"] === "message")
                 page.remember(m)
             else
@@ -231,6 +238,8 @@ Page {
             return
         loading = true
         store.history(chatId, messages.get(messages.count - 1).msgId, 40, (got) => {
+            if (!page)
+                return
             page.add(got)
             page.more = got.length > 0
             page.loading = false
@@ -327,8 +336,8 @@ Page {
             for (let i = 0; i < Math.min(messages.count, 20); i++)
                 if (messages.get(i).msgId === m.id)
                     return
-            const from = m.is_outgoing && page.flying && m.content["@type"] === "messageText" &&
-                         m.content.text.text === page.flying.text ? page.flying : null
+            const from = m.is_outgoing && page.flying &&     // (one emoji alone comes back as messageAnimatedEmoji)
+                         store.plain(m.content) === page.flying.text ? page.flying : null
             const bottom = list.atYBeginning || from
             const was = list.contentY
             page.remember(m)

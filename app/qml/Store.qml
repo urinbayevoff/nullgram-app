@@ -362,18 +362,84 @@ QtObject {
         messageInvoice: "To'lov", messageChatAddMembers: "a'zo qo'shildi", messageChatJoinByLink: "guruhga qo'shildi",
         messageChatDeleteMember: "guruhdan chiqdi", messagePinMessage: "xabar qadaldi", messageChatChangeTitle: "nom o'zgardi",
         messageChatChangePhoto: "rasm o'zgardi", messageBasicGroupChatCreate: "guruh yaratildi",
-        messageSupergroupChatCreate: "guruh yaratildi", messageContactRegistered: "Telegram'ga qo'shildi"
+        messageSupergroupChatCreate: "guruh yaratildi", messageContactRegistered: "Telegram'ga qo'shildi",
+        messageChatDeletePhoto: "rasm o'chirildi", messageChatJoinByRequest: "guruhga qo'shildi",
+        messageChatUpgradeTo: "superguruhga aylandi", messageChatUpgradeFrom: "superguruhga aylandi",
+        messageChatSetMessageAutoDeleteTime: "avto-o'chirish o'zgardi", messageScreenshotTaken: "skrinshot olindi",
+        messageChatSetTheme: "mavzu o'zgardi", messageChatSetBackground: "fon o'zgardi",
+        messageForumTopicCreated: "mavzu yaratildi", messageForumTopicEdited: "mavzu o'zgardi",
+        messageVideoChatStarted: "video chat boshlandi", messageVideoChatEnded: "video chat tugadi",
+        messageVideoChatScheduled: "video chat rejalashtirildi", messageInviteVideoChatParticipants: "video chatga taklif",
+        messageExpiredPhoto: "Rasm muddati tugadi", messageExpiredVideo: "Video muddati tugadi",
+        messageExpiredVoiceNote: "Ovozli xabar muddati tugadi", messageExpiredVideoNote: "Video xabar muddati tugadi",
+        messagePaidMedia: "Pullik media", messageGift: "Sovg'a", messageUpgradedGift: "Sovg'a", messageRefundedUpgradedGift: "Sovg'a",
+        messageGiftedPremium: "Premium sovg'a", messagePremiumGiftCode: "Premium sovg'a", messageGiftedStars: "Yulduzlar sovg'a",
+        messageGiveaway: "Konkurs", messageGiveawayCreated: "Konkurs", messageGiveawayCompleted: "Konkurs yakunlandi",
+        messageGiveawayWinners: "Konkurs g'oliblari", messageChatBoost: "Kanal kuchaytirildi",
+        messagePaymentSuccessful: "To'lov qilindi", messageProximityAlertTriggered: "Yaqinlashdi",
+        messageSuggestProfilePhoto: "Profil rasmi taklifi", messageCustomServiceAction: "Xizmat xabari",
+        messageBotWriteAccessAllowed: "botga ruxsat berildi", messageWebAppDataSent: "ilova ma'lumot yubordi",
+        messageUsersShared: "Kontakt ulashildi", messageChatShared: "Chat ulashildi", messageChecklist: "Ro'yxat",
+        messageUnsupported: "Bu Telegram versiyasida ochilmaydi", messageManagedBotCreated: "bot yaratildi"
     })
+
+    // the text of a message that is text: plain, one emoji alone (TDLib makes it messageAnimatedEmoji),
+    // or a rich message (its blocks' words, a paragraph a line); null for the rest
+    function plain(content) {
+        const t = content["@type"]
+        if (t === "messageText")
+            return content.text.text
+        if (t === "messageAnimatedEmoji")
+            return content.emoji
+        if (t === "messageRichMessage") {
+            const lines = []
+            for (const b of content.message.blocks) {
+                const words = []
+                words_of(b, words)
+                if (words.length)
+                    lines.push(words.join(""))
+            }
+            return lines.join("\n")
+        }
+        return null
+    }
+    // every richTextPlain's string under a page block, in order
+    function words_of(v, out) {
+        if (Array.isArray(v)) {
+            for (const x of v)
+                words_of(x, out)
+        } else if (v && typeof v === "object") {
+            if (v["@type"] === "richTextPlain")
+                out.push(v.text)
+            else
+                for (const k in v)
+                    if (k !== "@type")
+                        words_of(v[k], out)
+        }
+    }
+
+    // a kind we have no word for yet: said once in the log, so it can be added
+    property var _unknown: ({})
+    function kindOf(t) {
+        if (kinds[t])
+            return kinds[t]
+        if (!_unknown[t]) {
+            _unknown[t] = true
+            console.warn("nullgram: no word for", t)
+        }
+        return "Bu turdagi xabar hali yo'q"
+    }
 
     // the text a message shows in the list (and a bubble without a picture)
     function preview(content) {
         const t = content["@type"]
-        if (t === "messageText")
-            return content.text.text
+        const words = plain(content)
+        if (words !== null)
+            return words
         const caption = content.caption ? content.caption.text : ""
         if (t === "messageSticker" && content.sticker.emoji)
             return content.sticker.emoji + " Stiker"
-        const kind = kinds[t] || "Bu turdagi xabar hali yo'q"
+        const kind = kindOf(t)
         return caption ? kind + ", " + caption : kind
     }
 
@@ -389,7 +455,7 @@ QtObject {
     // ---- pictures --------------------------------------------------------------
     function photoPath(c) {
         const f = c.photo && c.photo.small
-        return f && f.local.is_downloading_completed ? "file://" + f.local.path : ""
+        return f && f.local.is_downloading_completed ? f.local.path : ""	// a path: image://round/ takes it as one
     }
 
     function watchPhoto(c) {

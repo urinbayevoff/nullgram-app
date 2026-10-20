@@ -103,7 +103,7 @@ class Round(QQuickImageProvider):
 		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
 
 	def requestImage(self, path, size, requested):
-		src = QImage(path)
+		src = QImage(path.removeprefix("file://"))
 		side = max(requested.width(), requested.height(), 1) if requested.isValid() else min(src.width(), src.height())
 		out = QImage(side, side, QImage.Format_ARGB32_Premultiplied)
 		out.fill(Qt.transparent)
