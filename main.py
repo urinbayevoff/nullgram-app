@@ -19,9 +19,10 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import Qt
 
 import ztos
+from glass import GlassBar
 from tg import Backend, preview
-from views import (Bubble, ChatRow, CompactBar, ContactRow, DayLabel, List, QrView, TiledPage, UnreadLabel,
-                   changed, day_title, set_photo, stamp_now)
+from views import (Bubble, ChatRow, ContactRow, DayLabel, List, QrView, TiledPage, UnreadLabel, changed, day_title,
+                   set_photo, stamp_now)
 
 app = ztos.App()
 tg = Backend()
@@ -203,16 +204,18 @@ class Chat(TiledPage):
 		self.asking = False
 		self._shift = 0
 		self._stick = False		# kept at the bottom as the list grows
-		self.box = ztos.TextBox(placeholder="xabar yozing" if self.kind != "channel" else "kanal")
-		self.box.submitted.connect(lambda _: self.send())
-		self.box.setContentsMargins(ztos.MARGIN, 6, ztos.MARGIN, 6)
-		self.layout().addWidget(self.box)
+		# at the foot, over the list: glass (glass.GlassBar)
 		if self.kind == "channel":
-			self.box.hide()
-		self.app_bar_compact = CompactBar(
-			[("send", "yuborish", self.send)] if self.kind != "channel" else [("refresh", "yangilash", self.reload)],
-			[("eng pastga", self.to_bottom)])
-		self.layout().addWidget(self.app_bar_compact)
+			self.box = None
+			parts = [("circle", "refresh", self.reload), ("space",), ("circle", "down", self.to_bottom)]
+		else:
+			self.box = ztos.TextBox(placeholder="xabar")
+			self.box.submitted.connect(lambda _: self.send())
+			parts = [("circle", "down", self.to_bottom), ("field", self.box),
+			         ("circle", "up", self.send, lambda: bool(self.box.text().strip()))]
+		self.foot = GlassBar(self, parts, height=44)
+		self.glass.append(self.foot)
+		self.list.setContentsMargins(ztos.MARGIN, 0, ztos.MARGIN, self.foot.space())
 		for sig, slot in self._links():
 			sig.connect(slot)
 
@@ -366,6 +369,8 @@ class Chat(TiledPage):
 			tg.read(self.chat["id"])
 
 	def send(self):
+		if self.box is None:
+			return
 		text = self.box.text().strip()
 		if not text:
 			return
@@ -412,9 +417,14 @@ class Settings(ztos.Page):
 		super().__init__("sozlamalar")
 		self.account = self.entry(me.get("name", ""), me.get("phone", "") and "+" + me["phone"])
 		self.space(8)
+		self.entry("chatlarni yangilash", "ro'yxatni Telegram'dan qayta olish", self.refresh)
 		self.entry("chiqish", "bu telefonda Telegram'dan chiqish", self.log_out)
-		self.section("TEPEGRAM 0.2")
+		self.section("TEPEGRAM 0.3")
 		self.text("Telegram uchun norasmiy ilova. Telethon (MIT) asosida.", 13)
+
+	def refresh(self):
+		chats.refresh()
+		app.pop()
 
 	def log_out(self):
 		def done(i):
@@ -423,13 +433,35 @@ class Settings(ztos.Page):
 		ztos.message("chiqish", "Bu telefonda Telegram hisobingizdan chiqasizmi?", ("chiqish", "bekor"), done)
 
 
+class Home(ztos.Pivot):
+	"""Chats and contacts side by side, and under them the glass tab bar (with
+	settings as a third tab, as Telegram for iOS has it) and a search button.
+	While the tabs slide the bar is one picture over them."""
+
+	def __init__(self, pages: list):
+		super().__init__(pages)
+		self.tabs = GlassBar(self, [
+			("tabs", [("chats", "chatlar", lambda: self.turn(0)), ("contacts", "kontaktlar", lambda: self.turn(1)),
+			          ("settings", "sozlamalar", lambda: app.push(Settings()))]),
+			("circle", "search", lambda: ztos.notify("Tepegram", "qidiruv hali yo'q"))],
+			page=self.current)
+		for page in pages:
+			page.glass.append(self.tabs)
+			page.list.setContentsMargins(ztos.MARGIN, 0, ztos.MARGIN, self.tabs.space())
+		self.turned.connect(self.tabs.select)
+
+	def _quads(self) -> list:
+		quads = super()._quads()
+		layer = ztos._layer_of(self)
+		if layer is not None:
+			quads += self.tabs.still_quads(layer)
+		return quads
+
+
 me = {}
 chats = Chats()
 contacts = Contacts()
-home = ztos.Pivot([chats, contacts])
-home.layout().addWidget(CompactBar(
-	[("refresh", "yangilash", chats.refresh), ("search", "qidirish", lambda: ztos.notify("Tepegram", "qidiruv hali yo'q"))],
-	[("sozlamalar", lambda: app.push(Settings()))]))
+home = Home([chats, contacts])
 
 
 def on_avatar(chat_id: int, path: str):

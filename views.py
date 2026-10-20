@@ -408,161 +408,6 @@ class UnreadLabel(Cached):
 		           f"{self.count} ta o'qilmagan xabar" if self.count else "o'qilmagan xabarlar")
 
 
-class CompactBar(QWidget):
-	"""Windows Phone's app bar as Telegram used it: small round icons in a
-	short grey strip, and "..." at the right; a tap there (or on the strip)
-	raises it, with the icons' words and the menu under them."""
-	H = 54
-	SLOT, D = 66.0, 34.0
-
-	def __init__(self, buttons=(), menu=()):
-		super().__init__()
-		self.buttons = list(buttons)		# (glyph, word, callback)
-		self.menu = list(menu)			# (text, callback)
-		self.setFixedHeight(self.H)
-		self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-		self.sheet = None
-		self.pressed = -1
-
-	def _x0(self) -> float:
-		return (self.width() - len(self.buttons) * self.SLOT) / 2
-
-	def _slot(self, x: float) -> int:
-		i = int((x - self._x0()) // self.SLOT)
-		return i if 0 <= i < len(self.buttons) and x >= self._x0() else -1
-
-	def paint_icons(self, p: QPainter, w: float, words: bool):
-		p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-		x0 = (w - len(self.buttons) * self.SLOT) / 2
-		for i, (glyph, word, _) in enumerate(self.buttons):
-			cx, cy = x0 + (i + 0.5) * self.SLOT, 6 + self.D / 2
-			if i == self.pressed:
-				p.setPen(Qt.NoPen)
-				p.setBrush(ztos.accent())
-				p.drawEllipse(QPointF(cx, cy), self.D / 2, self.D / 2)
-			p.setPen(QPen(QColor("white"), 1.8))
-			p.setBrush(Qt.NoBrush)
-			p.drawEllipse(QPointF(cx, cy), self.D / 2 - 0.9, self.D / 2 - 0.9)
-			p.save()
-			p.translate(cx, cy)
-			p.setPen(QPen(QColor("white"), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-			ztos._glyph(p, glyph, 14)
-			p.restore()
-			if words:
-				p.setPen(QColor("white"))
-				p.setFont(_font(FONT_REGULAR, 11))
-				p.drawText(QRectF(cx - self.SLOT / 2, 6 + self.D + 3, self.SLOT, 16), Qt.AlignHCenter, word)
-		# the "..."
-		p.setPen(Qt.NoPen)
-		p.setBrush(QColor("white"))
-		for k in range(3):
-			p.drawEllipse(QPointF(w - 30 + k * 7, 10), 1.6, 1.6)
-
-	def paintEvent(self, event):
-		p = QPainter(self)
-		p.fillRect(self.rect(), CHROME)
-		self.paint_icons(p, self.width(), False)
-		p.end()
-
-	def mousePressEvent(self, event):
-		self.pressed = self._slot(event.position().x())
-		self.update()
-
-	def mouseReleaseEvent(self, event):
-		i, self.pressed = self.pressed, -1
-		self.update()
-		if not self.rect().contains(event.position().toPoint()):
-			return
-		if i >= 0 and self._slot(event.position().x()) == i:
-			ztos.haptic("tap")
-			self.buttons[i][2]()
-		else:
-			self.open()
-
-	def open(self):
-		if self.sheet is None:
-			self.sheet = _BarSheet(self)
-
-	def close_sheet(self):
-		if self.sheet is not None:
-			self.sheet.close_all()
-			self.sheet = None
-
-
-class _BarSheet(QWidget):
-	"""The raised app bar, over the page's foot; a tap above it lowers it."""
-	ROW = 42
-
-	def __init__(self, bar: CompactBar):
-		host = bar.window()
-		super().__init__(host)
-		self.bar = bar
-		self.catcher = QWidget(host)		# the rest of the window: a tap there lowers it
-		self.catcher.setGeometry(host.rect())
-		self.catcher.mousePressEvent = lambda e: bar.close_sheet()
-		self.catcher.show()
-		self.catcher.raise_()
-		h = 6 + bar.D + 22 + (len(bar.menu) * self.ROW + 10 if bar.menu else 0)
-		foot = bar.mapTo(host, QPoint(0, bar.height())).y()
-		self.setGeometry(0, foot - h, host.width(), h)
-		self.pressed = -1
-		self.show()
-		self.raise_()
-
-	def close_all(self):
-		self.catcher.hide()
-		self.catcher.deleteLater()
-		self.hide()
-		self.deleteLater()
-
-	def _hit(self, pos) -> tuple:
-		top = 6 + self.bar.D + 22
-		if pos.y() < top:
-			x0 = (self.width() - len(self.bar.buttons) * self.bar.SLOT) / 2
-			i = int((pos.x() - x0) // self.bar.SLOT)
-			return ("button", i) if pos.x() >= x0 and 0 <= i < len(self.bar.buttons) else ("strip", -1)
-		i = int((pos.y() - top - 4) // self.ROW)
-		return ("menu", i) if 0 <= i < len(self.bar.menu) else ("strip", -1)
-
-	def paintEvent(self, event):
-		p = QPainter(self)
-		p.fillRect(self.rect(), CHROME)
-		self.bar.paint_icons(p, self.width(), True)
-		top = 6 + self.bar.D + 22
-		p.setFont(_font(FONT_REGULAR, 19))
-		fm = QFontMetricsF(p.font())
-		for i, (text, _) in enumerate(self.bar.menu):
-			p.setPen(ztos.accent() if self.pressed == i else QColor("white"))
-			p.drawText(QPointF(ztos.MARGIN + 4, top + 4 + i * self.ROW + (self.ROW + fm.ascent()) / 2 - 4), text)
-		p.end()
-
-	def mousePressEvent(self, event):
-		what, i = self._hit(event.position())
-		if what == "button":
-			self.bar.pressed = i
-		elif what == "menu":
-			self.pressed = i
-		self.update()
-
-	def mouseReleaseEvent(self, event):
-		what, i = self._hit(event.position())
-		self.bar.pressed = -1
-		pressed, self.pressed = self.pressed, -1
-		bar = self.bar
-		if what == "button":
-			bar.close_sheet()
-			ztos.haptic("tap")
-			bar.buttons[i][2]()
-		elif what == "menu" and i == pressed:
-			bar.close_sheet()
-			ztos.haptic("tap")
-			bar.menu[i][1]()
-		elif what == "strip":
-			bar.close_sheet()
-		else:
-			self.update()
-
-
 class QrView(QWidget):
 	"""A tg://login link as a QR code: black modules on a white square."""
 
@@ -618,9 +463,63 @@ class TiledPage(ztos.Page):
 		self._tile_h = {}
 		self._prints = {}
 		self._gl_idle.setInterval(60)
+		# for glass over the list (glass.GlassBar): each tile small, then blurred
+		self.glass = []
+		self._small = {}
+		self._blur = {}
+		self.glass_gen = 0
 
 	def _key(self, i: int):
 		return (id(self), "tile", i)
+
+	# the blurred copies
+	SMALL = 4		# points a pixel
+	BLUR_MARGIN = 16	# pixels of the tiles either side, so the blur has no seams
+
+	def _shrink(self, i: int, image: QImage):
+		w = max(1, round(image.width() / image.devicePixelRatio() / self.SMALL))
+		h = max(1, round(image.height() / image.devicePixelRatio() / self.SMALL))
+		# (a quarter first, the quick way: what is lost there the blur would lose)
+		quick = image.scaled(w * 4, h * 4, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+		small = quick.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+		small.setDevicePixelRatio(1.0)
+		self._small[i] = small
+		for j in (i - 1, i, i + 1):
+			if j in self._small:
+				self._blur_tile(j)
+		self.glass_gen += 1
+		if not self._gl_on:
+			for bar in self.glass:
+				bar.update()
+
+	def _blur_tile(self, i: int):
+		"""Tile i's small copy blurred (about 16 points), with its neighbours'
+		edges under and over it, so the blur runs on across the seam."""
+		small = self._small[i]
+		w, h, m = small.width(), small.height(), self.BLUR_MARGIN
+		col = QImage(w, h + 2 * m, QImage.Format_RGBA8888_Premultiplied)
+		col.fill(QColor("black"))
+		p = QPainter(col)
+		above, below = self._small.get(i - 1), self._small.get(i + 1)
+		if above is not None:
+			p.drawImage(QPoint(0, m - above.height()), above)
+		p.drawImage(QPoint(0, m), small)
+		if below is not None:
+			p.drawImage(QPoint(0, m + h), below)
+		p.end()
+		# down twice and up twice, each time smoothed: close to a gaussian
+		cw, ch = col.width(), col.height()
+		sizes = [(max(1, cw // 2), max(1, ch // 2)), (max(1, cw // 4), max(1, ch // 4))]
+		img = col
+		for sw, sh in sizes:
+			img = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+		for sw, sh in [sizes[0], (cw, ch)]:
+			img = img.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+		blurred = img.copy(0, m, w, h)
+		self._blur[i] = blurred
+		layer = ztos._layer_of(self)
+		if layer is not None:
+			layer.upload((id(self), "blur", i), blurred)
 
 	def _count(self) -> int:
 		return max(1, -(-self.body.height() // self.TILE))
@@ -678,11 +577,14 @@ class TiledPage(ztos.Page):
 			self._quiet = False
 		t1 = time.perf_counter()
 		layer.upload(self._key(i), image)
+		t15 = time.perf_counter()
+		if self.glass:
+			self._shrink(i, image)
 		t2 = time.perf_counter()
 		self._tiles[i], self._tile_h[i] = "ok", h
 		self._prints[i] = self._print(top, h)
 		if ztos._profiling:
-			print(f"tepegram tile {i}: render {(t1 - t0) * 1000:.0f} upload {(t2 - t1) * 1000:.0f} "
+			print(f"tepegram tile {i}: render {(t1 - t0) * 1000:.0f} upload {(t15 - t1) * 1000:.0f} glass {(t2 - t15) * 1000:.0f} "
 			      f"print {(time.perf_counter() - t2) * 1000:.0f} ms{' (moving)' if self._gl_on else ''}",
 			      file=sys.stderr, flush=True)
 
@@ -717,8 +619,11 @@ class TiledPage(ztos.Page):
 		keep = self._nearest()
 		for i in [i for i in self._tiles if i not in keep]:
 			layer.drop(self._key(i))
+			layer.drop((id(self), "blur", i))
 			self._tiles.pop(i)
 			self._prints.pop(i, None)
+			self._small.pop(i, None)
+			self._blur.pop(i, None)
 		for i in keep:
 			if not self._fresh(i):
 				self._render(i)
@@ -735,6 +640,9 @@ class TiledPage(ztos.Page):
 			return
 		self._gl_idle.stop()
 		self._ensure(self._scroll)
+		for bar in self.glass:
+			bar.gpu_prepare(layer)
+			bar.gpu_where(self)
 		self._gl_on = True
 		ztos._solid(layer, ("sys", "black"), QColor("black"))
 		at = self.viewport.mapTo(self.window(), QPoint(0, 0))
@@ -761,6 +669,9 @@ class TiledPage(ztos.Page):
 			if c1 > c0:
 				quads.append(Quad.rect(self._key(i), QRectF(0, (c0 - t0) / th, 1, (c1 - c0) / th),
 				                       self._gl_ox, self._gl_oy + c0 - s, w, c1 - c0))
+		for bar in self.glass:
+			if bar.isVisible():
+				quads += bar.gpu_quads(self, s, layer)
 		return quads
 
 	def _set(self, scroll: float):
