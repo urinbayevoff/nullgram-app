@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- one-colour mark (white on transparent, like the old icon.svg): null ring + paper plane -->
+  <defs>
+    <mask id="cut">
+      <rect width="256" height="256" fill="#fff"/>
+      <g transform="rotate(-45 128 128)">
+        <rect x="0" y="88" width="256" height="80" fill="#000"/>
+      </g>
+    </mask>
+  </defs>
+  <circle cx="128" cy="128" r="76" fill="none" stroke="#fff" stroke-width="28" mask="url(#cut)"/>
+  <g transform="translate(128 128) rotate(-45) scale(1.45)">
+    <path fill="#fff" d="M62 0L-50 -33L-28 0L-50 33Z"/>
+  </g>
+</svg>
