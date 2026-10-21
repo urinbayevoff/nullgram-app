@@ -836,6 +836,10 @@ Page {
     }
 
     function openMenu(item) {
+        if (page.kb > 0) {          // the keyboard down first, over the menu's actions it would stay
+            field.focus = false
+            osk.hide()
+        }
         const m = { id: item.msgId, text: item.text, kind: item.kind, out: item.out,
                     name: item.out ? "Siz" : item.sender || (chat ? chat.title : "") }
         // its properties and the reactions it can get, both asked at once; the menu opens with both
@@ -853,7 +857,7 @@ Page {
         })
     }
 
-    function showMenu(item, m, p, reactions) {
+    function showMenu(item, m, p, reactions, waited) {
         const ok = p["@type"] === "messageProperties"
         const acts = []
         if (ok && p.can_be_replied && !page.channel)
@@ -878,11 +882,29 @@ Page {
             acts.push({ text: "O'chirish", glyph: "✕", danger: true,
                         run: () => store.deleteMessages(page.chatId, [m.id], p.can_be_deleted_for_all_users) })
         }
+        if (page.kb > 0 && !waited) {   // (opened once it is down: the bubble moves down with the list)
+            menuWaits = () => page.showMenu(item, m, p, reactions, true)
+            menuLate.restart()
+            return
+        }
         const i = page.indexOf(m.id)
         const it = i >= 0 ? list.itemAtIndex(i) : null
         page.reacting = m.id
         if (it && acts.length)
             menu.show(it.face, m.out, acts, reactions, it.reactList.filter((r) => r.mine).map((r) => r.e))
+    }
+    property var menuWaits: null        // the menu, while the keyboard goes down
+    onKbChanged: if (kb === 0 && menuWaits) menuLate.triggered()
+    Timer {
+        id: menuLate
+        interval: 800               // (should the keyboard not go)
+        onTriggered: {
+            const f = page.menuWaits
+            page.menuWaits = null
+            stop()
+            if (f)
+                f()
+        }
     }
     property var forwarding: []         // the messages the forward sheet sends
     property var reacting: 0            // the message the menu's reactions go on
@@ -1654,19 +1676,17 @@ Page {
             }
         }
 
-        Rectangle {          // ↓: to the newest (loaded afresh when it was opened at the unread ones)
+        Glass {              // ↓: to the newest (loaded afresh when it was opened at the unread ones)
             id: toNewest
             z: 2
             anchors.right: parent.right; anchors.rightMargin: 10
-            y: parent.height - page.kb - page.foot - height - 12
-            width: 40; height: 40; radius: 20
-            color: Theme.menu
-            border.color: Theme.fieldBorder; border.width: 1
+            y: parent.height - page.kb - page.foot - height - 8
+            width: 40; height: 40
             visible: page.ready && page.away
             Text {
                 anchors.centerIn: parent
                 text: "⌄"
-                color: Theme.grey
+                color: Theme.text
                 font.family: Theme.font; font.pixelSize: 26
                 anchors.verticalCenterOffset: -5
             }
@@ -2053,28 +2073,26 @@ Page {
             }
         }
 
-        Rectangle {          // a channel we only read: its sound on or off instead of the field
-            id: chanBar
+        Item {               // a channel we only read: its sound on or off instead of the field, a capsule
+            id: chanBar      // and a round 🔍 of glass floating over the posts (Telegram-iOS 26, owner's IMG_0092)
             z: 1
             visible: !page.canPost && !page.searching
             anchors.bottom: parent.bottom
             width: parent.width
             height: visible ? 60 : 0
-            color: Theme.bar
-            Rectangle {
+            Glass {
                 anchors.centerIn: parent
-                width: muteText.implicitWidth + 64; height: 40; radius: 20
-                color: Theme.field
-                border.color: Theme.fieldBorder; border.width: 1
-                Icon { x: 18; anchors.verticalCenter: parent.verticalCenter; name: "bell"; color: Theme.accent; scale: 0.8 }
+                width: muteText.implicitWidth + 44; height: 44
+                opacity: muteHit.pressed ? 0.7 : 1
                 Text {
                     id: muteText
-                    x: 46; anchors.verticalCenter: parent.verticalCenter
+                    anchors.centerIn: parent
                     text: page.muted ? "Ovozni yoqish" : "Ovozni o'chirish"
-                    color: Theme.accent
-                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
+                    color: Theme.text
+                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
                 }
                 MouseArea {
+                    id: muteHit
                     anchors.fill: parent
                     onClicked: {
                         const n = Object.assign({}, page.chat.notification_settings)
@@ -2086,81 +2104,82 @@ Page {
                     }
                 }
             }
-            Icon {               // (as IMG_0297: the search on the bar's right)
-                anchors.right: parent.right; anchors.rightMargin: 18
+            Glass {              // (as IMG_0297: the search on the bar's right)
+                anchors.right: parent.right; anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                name: "search"; color: Theme.accent
-                MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: { page.searching = true; findField.forceActiveFocus() } }
+                width: 44; height: 44
+                opacity: findHit.pressed ? 0.7 : 1
+                Icon { anchors.centerIn: parent; name: "search"; color: Theme.text }
+                MouseArea { id: findHit; anchors.fill: parent; onClicked: { page.searching = true; findField.forceActiveFocus() } }
             }
         }
 
-        Rectangle {          // the field, with what it answers or edits over it
-            id: input
+        Item {               // the field, with what it answers or edits over it: Telegram-iOS 26's glass
+            id: input        // floating over the chat — 📎, the field, the mic, each its own piece
             z: 1
             visible: page.canPost && !page.searching
             anchors.bottom: parent.bottom
             transform: Translate { y: -page.kb }
             width: parent.width
-            height: visible ? compose.height + Math.max(52, field.contentHeight + 26) : 0
-            color: Theme.bar
+            height: visible ? compose.height + Math.max(60, field.contentHeight + 38) : 0
             onHeightChanged: if (list.down && !scroll.running) Qt.callLater(list.positionViewAtBeginning)
-            Item {
-                id: compose
-                width: parent.width
-                height: page.replying || page.editing ? 46 : 0
-                visible: height > 0
-                Rectangle { x: 14; y: 8; width: 2; height: 32; color: Theme.accent }
-                Text {
-                    x: 26; y: 7
-                    width: parent.width - 80
-                    elide: Text.ElideRight
-                    text: page.editing ? "Tahrirlash" : page.replying ? "Javob: " + page.replying.name : ""
-                    color: Theme.accent
-                    font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
-                }
-                Text {
-                    x: 26; y: 25
-                    width: parent.width - 80
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
-                    textFormat: Text.PlainText
-                    text: page.replying ? page.replying.text.replace(/\s+/g, " ") : ""
-                    color: Theme.text
-                    font.family: Theme.font; font.pixelSize: 14
-                }
-                Text {
-                    anchors.right: parent.right; anchors.rightMargin: 18
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "✕"
-                    color: Theme.grey
-                    font.family: Theme.font; font.pixelSize: 18
-                    MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: page.cancelCompose() }
-                }
-            }
-            Icon {               // the clip: pictures and files from the phone
-                x: 12
-                anchors.bottom: parent.bottom; anchors.bottomMargin: 16
-                width: 26; height: 26
-                name: "clip"
-                color: Theme.grey
+            Glass {              // the clip: pictures and files from the phone
+                x: 8
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+                width: 44; height: 44
                 visible: !page.editing
+                opacity: clipHit.pressed ? 0.7 : 1
+                Icon { anchors.centerIn: parent; width: 26; height: 26; name: "clip"; color: Theme.text }
                 MouseArea {
-                    anchors.fill: parent; anchors.margins: -10
+                    id: clipHit
+                    anchors.fill: parent
                     onClicked: {
                         Qt.inputMethod.hide()
                         sheet.show()
                     }
                 }
             }
-            Rectangle {
-                x: page.editing ? 10 : 48; y: compose.height + 8
-                width: parent.width - x - 56; height: parent.height - compose.height - 16
-                radius: 18
-                color: Theme.field
-                border.color: Theme.fieldBorder; border.width: 0.5
+            Glass {
+                id: fieldBox
+                x: page.editing ? 8 : 58; y: 8
+                width: parent.width - x - 58; height: parent.height - 16
+                radius: 22
+                Item {           // what it answers or edits, at the top of the field's glass
+                    id: compose
+                    width: parent.width
+                    height: page.replying || page.editing ? 46 : 0
+                    visible: height > 0
+                    Rectangle { x: 14; y: 8; width: 2; height: 32; radius: 1; color: Theme.accent }
+                    Text {
+                        x: 24; y: 7
+                        width: parent.width - 60
+                        elide: Text.ElideRight
+                        text: page.editing ? "Tahrirlash" : page.replying ? "Javob: " + page.replying.name : ""
+                        color: Theme.accent
+                        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        x: 24; y: 25
+                        width: parent.width - 60
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                        textFormat: Text.PlainText
+                        text: page.replying ? page.replying.text.replace(/\s+/g, " ") : ""
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 14
+                    }
+                    Text {
+                        anchors.right: parent.right; anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "✕"
+                        color: Theme.grey
+                        font.family: Theme.font; font.pixelSize: 18
+                        MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: page.cancelCompose() }
+                    }
+                }
                 TextEdit {
                     id: field
-                    x: 14; y: 8
+                    x: 14; y: compose.height + 11
                     width: parent.width - 28 - (bell.visible ? 30 : 0) - (clock.visible ? 30 : 0)
                     wrapMode: TextEdit.Wrap
                     color: Theme.text
@@ -2175,8 +2194,8 @@ Page {
                 Item {           // ⏱: how long messages stay (Telegram-iOS's auto-delete button), the time when set
                     id: clock
                     visible: page.canAutoDelete && !page.editing
-                    anchors.right: parent.right; anchors.rightMargin: 10
-                    anchors.bottom: parent.bottom; anchors.bottomMargin: (36 - height) / 2
+                    anchors.right: parent.right; anchors.rightMargin: 12
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: (44 - height) / 2
                     width: 22; height: 22
                     Icon {
                         visible: !page.autoDelete
@@ -2203,8 +2222,8 @@ Page {
                 Icon {           // a channel's 🔔: the post with or without a sound (Telegram-iOS's silent posting)
                     id: bell
                     visible: page.channel && !page.editing
-                    anchors.right: clock.visible ? clock.left : parent.right; anchors.rightMargin: clock.visible ? 8 : 10
-                    anchors.bottom: parent.bottom; anchors.bottomMargin: (36 - height) / 2
+                    anchors.right: clock.visible ? clock.left : parent.right; anchors.rightMargin: clock.visible ? 8 : 12
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: (44 - height) / 2
                     width: 22; height: 22
                     name: "bell"
                     color: Theme.grey
@@ -2214,17 +2233,18 @@ Page {
                         width: 2; height: 26; radius: 1
                         rotation: -45
                         color: Theme.grey
-                        border.color: Theme.field; border.width: 0.5
+                        border.color: Theme.glass; border.width: 0.5
                     }
                     MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: page.setSilent(!page.silent) }
                 }
             }
-            Rectangle {          // recording: the time, and how to let it go (over the field)
+            Rectangle {          // recording: the time, and how to let it go (over the clip and the field)
                 id: recBar
                 visible: page.recording
-                x: 0; y: compose.height
-                width: parent.width - 56; height: parent.height - compose.height
-                color: Theme.bar
+                x: 8; y: fieldBox.y + compose.height
+                width: parent.width - 66; height: fieldBox.height - compose.height
+                radius: 22
+                color: Theme.glass
                 Rectangle {
                     id: dot
                     x: 18; anchors.verticalCenter: parent.verticalCenter
@@ -2255,18 +2275,23 @@ Page {
             Rectangle {          // send (✓ for an edit); with the field empty, the mic: held, it records
                 id: sendButton
                 readonly property bool mic: !field.text.trim() && !page.editing
-                anchors.right: parent.right; anchors.rightMargin: 10
-                anchors.bottom: parent.bottom; anchors.bottomMargin: 10
-                width: 36; height: 36; radius: 18
+                anchors.right: parent.right; anchors.rightMargin: 8
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 8
+                width: 44; height: 44; radius: 22
                 color: mic ? (page.recording ? Theme.danger : "transparent") : field.text.trim() ? Theme.accent : Theme.mutedBadge
                 scale: page.recording ? 1.6 : 1
                 Behavior on scale { ScaleAnimator { duration: 200; easing.type: Easing.OutBack } }
+                Glass {          // the mic's own round glass (the send button is the accent's colour)
+                    z: -1
+                    anchors.fill: parent
+                    visible: sendButton.mic && !page.recording
+                }
                 Icon {
                     visible: sendButton.mic
                     anchors.centerIn: parent
                     width: 26; height: 26
                     name: "mic"
-                    color: page.recording ? "white" : Theme.grey
+                    color: page.recording ? "white" : Theme.text
                 }
                 Text { visible: !sendButton.mic; anchors.centerIn: parent; text: page.editing ? "✓" : "↑"; color: "white"; font.pixelSize: 20; font.weight: Font.Bold }
                 MouseArea {
