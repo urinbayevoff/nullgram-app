@@ -43,7 +43,8 @@ lifted (on touch: bounds + 4 pt each side, refracting, `warpsContentBelow`) or r
 ContextControllerExtractedPresentationNode.swift, `case .animateIn`): long press → the whole chat
 blurs, the message is lifted out and springs to its menu position, reactions row over it, actions
 under it. Spring: duration 0.42, damping 104 with makeSpringBounceAnimation's mass 5, stiffness 900
-(ζ ≈ 0.78: a small overshoot — seen on the video, the menu grows from the bubble in ≈ 100 ms and
+(ζ ≈ 0.78; `animateSpring` sets speed = settlingDuration/duration, so the whole settling (0.615 s at
+1e-3) is squeezed into 0.42 s → ω 19.6/s, peak +2 % at 0.25 s — the actions' width on the video fits exactly: a small overshoot — seen on the video, the menu grows from the bubble in ≈ 100 ms and
 overshoots a little); content alpha 0→1 in 0.15 s; reaction emojis pop in left to right
 (≈ 170 ms over the row). Finger sliding over the items highlights them; "Edit" puts an "Edit
 Message" bar over the input.

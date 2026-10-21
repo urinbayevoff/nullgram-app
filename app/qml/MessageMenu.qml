@@ -24,6 +24,12 @@ Item {
     property bool stripOurs: false      // the reactions' row lines up with the bubble's right edge (ours) or left
     property real stripEdge: 0
 
+    // Telegram-iOS's spring for all of it (duration 0.42, damping 104, mass 5, stiffness 900:
+    // ζ 0.78, its whole settling squeezed into 0.42 s → ω 19.6/s, peaks 2 % over at 0.25 s), as a
+    // BezierSpline within 0.0015 of it. Measured on IMG_0300: the actions' width per frame fits it.
+    readonly property var spring: [0.0333, 0.0, 0.0667, 0.1058, 0.1, 0.2201, 0.14, 0.3573, 0.18, 0.5086,
+                                   0.22, 0.6252, 0.28, 0.8001, 0.34, 0.9024, 0.4, 0.9553, 0.4833, 1.0287,
+                                   0.5667, 1.024, 0.65, 1.0199, 0.7667, 1.0141, 0.8833, 1.0032, 1, 1.0]
     readonly property real rowHeight: 46
     readonly property real boxWidth: 240
     property real homeX: 0              // where the bubble is in the chat
@@ -52,7 +58,6 @@ Item {
         lifted.y = homeY
         box.y = Math.min(restY + h + 8, floor - 16 - boxH)
         box.x = ours ? Math.min(width - 12, homeX + item.width) - boxWidth : Math.max(12, homeX)
-        box.transformOrigin = ours ? Item.TopRight : Item.TopLeft
         shot.scheduleUpdate()
         open = true
         visible = true
@@ -117,7 +122,8 @@ Item {
         radius: 20
         color: Theme.menu
         opacity: 0
-        scale: 0.5
+        scale: 0.01
+        transformOrigin: Item.Top       // it grows out of the bubble's edge, from its middle
         clip: true
         Column {
             anchors.fill: parent
@@ -128,18 +134,18 @@ Item {
                     required property int index
                     width: box.width; height: menu.rowHeight
                     color: hit.pressed ? Theme.highlight : "transparent"
-                    Text {
-                        x: 16; anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.text
-                        color: modelData.danger ? Theme.danger : Theme.text
-                        font.family: Theme.font; font.pixelSize: 16
-                    }
-                    Text {
-                        anchors.right: parent.right; anchors.rightMargin: 16
-                        anchors.verticalCenter: parent.verticalCenter
+                    Text {          // iOS 26: the icon first, then the words
+                        width: 26; x: 14; anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignHCenter
                         text: modelData.glyph || ""
                         color: modelData.danger ? Theme.danger : Theme.text
                         font.family: Theme.font; font.pixelSize: 17
+                    }
+                    Text {
+                        x: 50; anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.text
+                        color: modelData.danger ? Theme.danger : Theme.text
+                        font.family: Theme.font; font.pixelSize: 16
                     }
                     Rectangle {
                         visible: index > 0
@@ -169,8 +175,12 @@ Item {
         radius: 24
         color: Theme.menu
         opacity: 0
-        scale: 0.5
+        scale: 0.01
         clip: true
+        // drawn into a picture of its own at full size, which is then scaled: drawn straight at
+        // 0.01 the emoji never showed (their glyphs are made at the size first drawn)
+        layer.enabled: true
+        layer.smooth: true
         Flickable {
             anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
             contentWidth: emojis.implicitWidth
@@ -180,6 +190,7 @@ Item {
                 Repeater {
                     model: menu.reactions
                     Item {
+                        id: cell
                         required property string modelData
                         width: 44; height: 48
                         Rectangle {
@@ -191,7 +202,7 @@ Item {
                         }
                         Text {
                             anchors.centerIn: parent
-                            text: parent.modelData
+                            text: cell.modelData
                             font.pixelSize: 27
                             scale: tapEmoji.pressed ? 1.25 : 1
                             Behavior on scale { NumberAnimation { duration: 120 } }
@@ -200,7 +211,7 @@ Item {
                             id: tapEmoji
                             anchors.fill: parent
                             onClicked: {
-                                const e = parent.modelData
+                                const e = cell.modelData
                                 menu.close()
                                 menu.reacted(e)
                             }
@@ -211,16 +222,16 @@ Item {
         }
     }
 
-    // in: the blur fades in, the bubble springs up (duration 0.42, damping ratio ~0.78: an
-    // overshoot of a few percent), the actions grow from it and show in 0.15 s
+    // in: the blur fades in, the bubble springs to its place, the actions grow from 0.01 (seen
+    // in 0.05 s) and the reactions' capsule from the bubble's corner, all on the one spring
     ParallelAnimation {
         id: opening
         OpacityAnimator { target: blurred; from: 0; to: 1; duration: 200; easing.type: Easing.OutQuad }
-        YAnimator { id: liftY; target: lifted; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
-        ScaleAnimator { target: box; from: 0.5; to: 1; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
-        OpacityAnimator { target: box; from: 0; to: 1; duration: 150 }
-        ScaleAnimator { target: strip; from: 0.5; to: 1; duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.6 }
-        OpacityAnimator { target: strip; from: 0; to: 1; duration: 150 }
+        YAnimator { id: liftY; target: lifted; duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+        ScaleAnimator { target: box; from: 0.01; to: 1; duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+        OpacityAnimator { target: box; from: 0; to: 1; duration: 50 }
+        ScaleAnimator { target: strip; from: 0.01; to: 1; duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+        OpacityAnimator { target: strip; from: 0; to: 1; duration: 100 }
     }
     // out: back where it was, quicker
     ParallelAnimation {

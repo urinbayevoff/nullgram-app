@@ -126,6 +126,10 @@ Page {
             if (!page)          // closed before TDLib answered
                 return
             page.add(page.withRoot(got, !failed && got.length < 30))
+            // one that came meanwhile (sent as it opened) is laid out again with neighbours now, and
+            // had scrolled to where the newest was before these: lay out, stop that, then go down
+            list.forceLayout()
+            scroll.stop()
             list.positionViewAtBeginning()
             page.ready = true
             Qt.callLater(page.seen)
