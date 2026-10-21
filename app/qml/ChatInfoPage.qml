@@ -1,7 +1,7 @@
 // About a chat (Telegram-iOS's PeerInfoScreen): its picture, name and status, buttons for its
 // sound and a search in it, what is known of it (the number, the username, the bio; a group's or
 // a channel's description and link), then what was sent there by kind: pictures and videos in a
-// grid, files, links, voice notes. A tap on one goes back to the chat, at that message.
+// grid (a tap shows one full screen), files, links, voice notes (a tap goes back to the chat, at it).
 import QtQuick
 
 SubPage {
@@ -40,6 +40,7 @@ SubPage {
         for (const t of tabs)
             count(t)
         load(tabs[0])
+        overlay = overlayMaker.createObject(page)
     }
     Timer { interval: 30000; repeat: true; running: true; onTriggered: page.now = Date.now() / 1000 }
 
@@ -58,7 +59,7 @@ SubPage {
             chatPage.focusFind()
         }
     }
-    function show(id) {
+    function toMessage(id) {
         nav.pop()
         if (chatPage)
             chatPage.goTo(id)
@@ -154,6 +155,90 @@ SubPage {
         }
         const w = m.content.link_preview
         return w ? w.url : ""
+    }
+
+    // ---- one of the grid full screen (Telegram's gallery) ----
+    property Item overlay: null         // the viewer and its note, over the page (not in its list)
+    property var shown: null            // what the viewer shows: { file, name } (its ↓ saves it)
+    function view(cell) {
+        const m = cell.modelData, c = m.content, v = overlay.viewer
+        const side = Math.round(grid.side), small = mini(m)
+        const src = cell.path ? "image://pic/0/" + side + "/" + cell.path
+                  : small ? "image://pic/0/" + side + "/mini/" + small : ""
+        if (c["@type"] === "messagePhoto") {
+            const big = c.photo.sizes[c.photo.sizes.length - 1]
+            shown = { file: big.photo, name: "photo_" + m.id + ".jpg" }
+            v.show(cell, big.height / big.width, src)
+            store.fetch(big.photo, 32, (path) => { if (page && v.open) v.better(path) })
+            return
+        }
+        const video = c.video
+        if (!video || cell.loading)
+            return
+        shown = { file: video.video, name: video.file_name || "video_" + m.id + ".mp4" }
+        const aspect = video.width ? video.height / video.width : 9 / 16
+        cell.loading = !video.video.local.is_downloading_completed
+        store.fetch(video.video, 32, (path) => {
+            cell.loading = false
+            if (page && page.nav.topPage === page)
+                v.show(cell, aspect, src, path)
+        })
+    }
+    function save() {
+        const f = shown
+        if (f)
+            store.fetch(f.file, 32, (path) => {
+                const to = td.save(path, f.name)
+                if (page)
+                    page.overlay.say(to ? "Saqlandi: Downloads/" + to.split("/").pop() : "Saqlab bo'lmadi")
+            })
+    }
+    // the shell's back: the viewer closes first
+    function dismiss() {
+        if (overlay && overlay.viewer.open) {
+            overlay.viewer.close()
+            return true
+        }
+        return false
+    }
+    Component {
+        id: overlayMaker
+        Item {
+            anchors.fill: parent
+            z: 20
+            readonly property alias viewer: viewer
+            function say(text) {
+                note.text = text
+                noteBox.opacity = 1
+                noteAway.restart()
+            }
+            PhotoViewer {
+                id: viewer
+                onSave: page.save()
+            }
+            Rectangle {
+                id: noteBox
+                z: 25
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: 68
+                width: Math.min(parent.width - 40, note.implicitWidth + 28); height: note.implicitHeight + 16
+                radius: height / 2
+                color: Qt.rgba(0, 0, 0, 0.75)
+                opacity: 0
+                visible: opacity > 0
+                Behavior on opacity { NumberAnimation { duration: 200 } }
+                Text {
+                    id: note
+                    anchors.centerIn: parent
+                    width: Math.min(implicitWidth, parent.parent.width - 68)
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: "white"
+                    font.family: Theme.font; font.pixelSize: 14
+                }
+            }
+            Timer { id: noteAway; interval: 2200; onTriggered: noteBox.opacity = 0 }
+        }
     }
 
     // ---- the head: picture, name, status ----
@@ -354,7 +439,13 @@ SubPage {
                             font.family: Theme.font; font.pixelSize: 11
                         }
                     }
-                    MouseArea { anchors.fill: parent; onClicked: page.show(cell.modelData.id) }
+                    Rectangle {     // a video coming down before it plays
+                        anchors.fill: parent
+                        visible: cell.loading
+                        color: Qt.rgba(0, 0, 0, 0.35)
+                    }
+                    property bool loading: false
+                    MouseArea { anchors.fill: parent; onClicked: page.view(cell) }
                 }
             }
         }
@@ -408,7 +499,7 @@ SubPage {
                         visible: row.index < rows.count - 1
                         x: 16; anchors.bottom: parent.bottom; width: parent.width - 16; height: 0.5; color: Theme.separator
                     }
-                    MouseArea { id: rowHit; anchors.fill: parent; onClicked: page.show(row.modelData.id) }
+                    MouseArea { id: rowHit; anchors.fill: parent; onClicked: page.toMessage(row.modelData.id) }
                 }
             }
         }
