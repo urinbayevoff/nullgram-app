@@ -983,9 +983,9 @@ Page {
         const ok = p["@type"] === "messageProperties"
         const acts = []
         if (ok && p.can_be_replied && !page.channel)
-            acts.push({ text: "Javob berish", glyph: "↩", run: () => page.reply(m) })
+            acts.push({ text: "Javob yozish", glyph: "↩", run: () => page.reply(m) })
         if (m.text)
-            acts.push({ text: "Nusxa olish", glyph: "⧉", run: () => page.copy(m.text) })
+            acts.push({ text: "Nusxalash", glyph: "⧉", run: () => page.copy(m.text) })
         if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
             acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
         if (m.text && !page.translating)        // this one alone in Uzbek, and back
@@ -997,12 +997,15 @@ Page {
         if (ok && p.can_be_forwarded)
             acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = false; forwardSheet.show() } })
         if (ok && p.can_be_copied && page.channel)   // (Telegram-iOS's "forward without the author's name")
-            acts.push({ text: "Imzosiz uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = true; forwardSheet.show() } })
+            acts.push({ text: "Imzosiz forward qilish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = true; forwardSheet.show() } })
         if (ok && p.can_be_pinned)
             acts.push({ text: item.isPinned ? "Qadashni olish" : "Qadash", glyph: "📌",
                         run: () => store.pin(page.chatId, m.id, !item.isPinned) })
         if (page.mains[m.id] && !item.sending)
-            acts.push({ text: "Saqlash", glyph: "↓", run: () => page.save(m.id) })
+            acts.push({ text: item.picKind === "photo" ? "Rasmni saqlash" : item.picKind === "video" || item.picKind === "round" ? "Videoni saqlash" : "Saqlash",
+                        glyph: "↓", run: () => page.save(m.id) })
+        if (ok && p.can_report_chat)
+            acts.push({ text: "Shikoyat qilish", glyph: "ⓘ", run: () => page.report([m.id], "", "") })
         if (ok && p.can_be_deleted_only_for_self && p.can_be_deleted_for_all_users) {
             acts.push({ text: "Men uchun o'chirish", glyph: "✕", danger: true,
                         run: () => store.deleteMessages(page.chatId, [m.id], false) })
@@ -1142,6 +1145,24 @@ Page {
                 out.push({ "@type": "textEntity", offset: a, length: b - a, type: e.type })
         }
         return { text: text, marks: out }
+    }
+
+    // Shikoyat qilish (reportChat): Telegram asks step by step — why (its options, maybe nested),
+    // some words when it wants them — until it is sent
+    function report(ids, option, text) {
+        store.send({ "@type": "reportChat", chat_id: chatId, option_id: option, message_ids: ids, text: text }, (r) => {
+            if (!page)
+                return
+            const t = r["@type"]
+            if (t === "reportChatResultOk")
+                toast("Shikoyat yuborildi")
+            else if (t === "reportChatResultOptionRequired")
+                reportMenu.ask({ ids: ids, title: r.title, options: r.options })
+            else if (t === "reportChatResultTextRequired")
+                reportMenu.ask({ ids: ids, option: r.option_id, optional: r.is_optional })
+            else
+                toast(t === "error" ? "Shikoyat yuborilmadi" : "Avval xabarlarni tanlang")
+        })
     }
 
     function copyLink(id) {
@@ -2326,7 +2347,7 @@ Page {
                 Text {
                     id: muteText
                     anchors.centerIn: parent
-                    text: page.outside ? "Qo'shilish" : page.muted ? "Ovozni yoqish" : "Ovozni o'chirish"
+                    text: page.outside ? "Qo'shilish" : page.muted ? "Sukutdan chiqarish" : "Sukut qilish"
                     color: page.outside ? Theme.accent : Theme.text
                     font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
                 }
@@ -2903,6 +2924,138 @@ Page {
                                     page.setAutoDelete(parent.modelData)
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    Item {               // Shikoyat qilish: why (Telegram's options), or a few words, a step at a time
+        id: reportMenu
+        z: 30
+        anchors.fill: parent
+        visible: false
+        property var step: null         // { ids, title, options } or { ids, option, optional }
+        function ask(st) {
+            step = st
+            why.text = ""
+            visible = true
+            reportCard.scale = 0.01
+            reportGrow.start()
+            if (!st.options)
+                why.forceActiveFocus()
+        }
+        function close() {
+            visible = false
+            why.focus = false
+        }
+        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.25) }
+        MouseArea { anchors.fill: parent; onClicked: reportMenu.close() }
+        Rectangle {
+            id: reportCard
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: Math.max(60, (parent.height - page.kb - height) / 2)
+            width: Math.min(parent.width - 48, 300); height: Math.min(steps.height, parent.height - page.kb - 120)
+            radius: 16
+            clip: true
+            color: Theme.menu
+            layer.enabled: true
+            ScaleAnimator { id: reportGrow; target: reportCard; from: 0.01; to: 1; duration: 420
+                            easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+            MouseArea { anchors.fill: parent }      // (not through to the shade, which closes it)
+            Flickable {
+                anchors.fill: parent
+                contentHeight: steps.height
+                Column {
+                    id: steps
+                    width: reportCard.width
+                    readonly property var st: reportMenu.step || {}
+                    Text {
+                        x: 16; width: parent.width - 32
+                        topPadding: 14; bottomPadding: 8
+                        wrapMode: Text.Wrap
+                        horizontalAlignment: Text.AlignHCenter
+                        text: steps.st.options ? (steps.st.title || "Shikoyat sababi") : "Batafsil yozing" + (steps.st.optional ? " (ixtiyoriy)" : "")
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 15; font.weight: Font.DemiBold
+                    }
+                    Repeater {
+                        model: steps.st.options || []
+                        Rectangle {
+                            required property var modelData
+                            width: steps.width; height: Math.max(44, optText.implicitHeight + 20)
+                            color: optHit.pressed ? Theme.highlight : "transparent"
+                            Rectangle { width: parent.width; height: 0.5; color: Theme.separator }
+                            Text {
+                                id: optText
+                                x: 16; width: parent.width - 48
+                                anchors.verticalCenter: parent.verticalCenter
+                                wrapMode: Text.Wrap
+                                text: parent.modelData.text
+                                color: Theme.text
+                                font.family: Theme.font; font.pixelSize: 16
+                            }
+                            Text {
+                                anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
+                                text: "›"; color: Theme.grey; font.pixelSize: 20
+                            }
+                            MouseArea {
+                                id: optHit
+                                anchors.fill: parent
+                                onClicked: {
+                                    const ids = steps.st.ids
+                                    reportMenu.close()
+                                    page.report(ids, parent.modelData.id, "")
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {          // the words, when Telegram asks for them
+                        visible: !steps.st.options
+                        x: 16; width: parent.width - 32
+                        height: visible ? Math.max(44, why.contentHeight + 20) : 0
+                        radius: 10
+                        color: Theme.field
+                        TextEdit {
+                            id: why
+                            x: 10; y: 10; width: parent.width - 20
+                            wrapMode: TextEdit.Wrap
+                            color: Theme.text
+                            font.family: Theme.font; font.pixelSize: 16
+                        }
+                    }
+                    Rectangle {
+                        visible: !steps.st.options
+                        width: steps.width; height: visible ? 52 : 0
+                        color: "transparent"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Yuborish"
+                            color: steps.st.optional || why.text.trim() ? Theme.accent : Theme.grey
+                            font.family: Theme.font; font.pixelSize: 17; font.weight: Font.DemiBold
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                if (!steps.st.optional && !why.text.trim())
+                                    return
+                                const st = steps.st
+                                reportMenu.close()
+                                page.report(st.ids, st.option, why.text.trim())
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: steps.width; height: 48
+                        color: cancelHit.pressed ? Theme.highlight : "transparent"
+                        Rectangle { width: parent.width; height: 0.5; color: Theme.separator }
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Bekor qilish"
+                            color: Theme.accent
+                            font.family: Theme.font; font.pixelSize: 17
+                        }
+                        MouseArea { id: cancelHit; anchors.fill: parent; onClicked: reportMenu.close() }
                     }
                 }
             }
