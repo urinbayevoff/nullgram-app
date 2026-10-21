@@ -1588,12 +1588,23 @@ Page {
             z: 3
             width: parent.width; height: 56
             color: Theme.bar
-            Text {
+            Row {               // ‹ and the chats with unread messages waiting behind it (Telegram-iOS)
                 x: 8; anchors.verticalCenter: parent.verticalCenter
-                text: "‹"
-                color: Theme.accent
+                spacing: 4
                 opacity: backHit.pressed ? 0.4 : 1
-                font.family: Theme.font; font.pixelSize: 34
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "‹"
+                    color: Theme.accent
+                    font.family: Theme.font; font.pixelSize: 34
+                }
+                Text {
+                    visible: store.unreadChats > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: store.unreadChats > 99 ? "99+" : store.unreadChats
+                    color: Theme.accent
+                    font.family: Theme.font; font.pixelSize: 16
+                }
             }
             MouseArea {          // the back button: the bar's whole height and 72 pt in, as iOS takes it
                 id: backHit
