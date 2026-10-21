@@ -126,6 +126,7 @@ QtObject {
             store.change(u.chat_id, { last_read_outbox_message_id: u.last_read_outbox_message_id })
             store.readOutbox(u.chat_id, u.last_read_outbox_message_id)
         },
+        updateChatPendingJoinRequests: (u) => store.change(u.chat_id, { pending_join_requests: u.pending_join_requests }),
         updateChatNotificationSettings: (u) => store.change(u.chat_id, { notification_settings: u.notification_settings }),
         updateChatDraftMessage: (u) => {
             store.change(u.chat_id, { draft_message: u.draft_message })
@@ -523,6 +524,12 @@ QtObject {
         return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ")
     }
 
+    // a post's views as Telegram-iOS shows them by the time: 957, 12.3K, 1.2M
+    function short(n) {
+        const cut = (v, u) => (v >= 100 ? Math.floor(v) : Math.floor(v * 10) / 10) + u
+        return n < 1000 ? String(n) : n < 1000000 ? cut(n / 1000, "K") : cut(n / 1000000, "M")
+    }
+
     readonly property var kinds: ({
         messagePhoto: "Rasm", messageVideo: "Video", messageVoiceNote: "Ovozli xabar", messageAudio: "Musiqa",
         messageSticker: "Stiker", messageAnimation: "GIF", messageDocument: "Fayl", messageContact: "Kontakt",
@@ -822,8 +829,10 @@ QtObject {
         return thread ? { "@type": "messageTopicThread", message_thread_id: thread } : null
     }
 
-    function sendText(chatId, text, replyTo, thread) {
+    // silent: the subscribers get it without a sound (a channel's 🔔 off)
+    function sendText(chatId, text, replyTo, thread, silent) {
         const req = { "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread),
+                      options: silent ? { "@type": "messageSendOptions", disable_notification: true } : null,
                       input_message_content: { "@type": "inputMessageText",
                                                text: { "@type": "formattedText", text: text } } }
         if (replyTo)
@@ -833,7 +842,8 @@ QtObject {
 
     // files from the phone (td.recent's): pictures and videos together as an album when there are
     // several, the rest one by one; the field's words go under the first. asFiles: all as documents
-    function sendFiles(chatId, files, caption, replyTo, asFiles, thread) {
+    function sendFiles(chatId, files, caption, replyTo, asFiles, thread, silent) {
+        const options = silent ? { "@type": "messageSendOptions", disable_notification: true } : null
         const text = { "@type": "formattedText", text: caption || "" }
         // (TDLib 1.8.68: the file and its sizes go in an inputPhoto, inputVideo... of their own)
         const contents = files.map((f, k) => {
@@ -860,17 +870,19 @@ QtObject {
         const rest = contents.filter((c) => album.indexOf(c) < 0)
         if (album.length > 1) {
             for (let k = 0; k < album.length; k += 10)
-                send({ "@type": "sendMessageAlbum", chat_id: chatId, topic_id: topic(thread), reply_to: k ? null : reply,
+                send({ "@type": "sendMessageAlbum", chat_id: chatId, topic_id: topic(thread), reply_to: k ? null : reply, options: options,
                        input_message_contents: album.slice(k, k + 10) }, check)
         } else {
             rest.unshift(...album)
         }
         for (const c of rest)
-            send({ "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread), reply_to: reply, input_message_content: c }, check)
+            send({ "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread), reply_to: reply, options: options,
+                   input_message_content: c }, check)
     }
 
-    function sendVoice(chatId, path, duration, waveform, replyTo, thread) {
+    function sendVoice(chatId, path, duration, waveform, replyTo, thread, silent) {
         send({ "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread),
+               options: silent ? { "@type": "messageSendOptions", disable_notification: true } : null,
                reply_to: replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null,
                input_message_content: { "@type": "inputMessageVoiceNote",
                                         voice_note: { "@type": "inputVoiceNote", voice_note: { "@type": "inputFileLocal", path: path },

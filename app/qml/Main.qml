@@ -34,17 +34,20 @@ Rectangle {
         property bool dark: false
         property bool autoGif: true
         property bool autoVoice: true
+        property string silent: ""
     }
     Component.onCompleted: {
         Theme.dark = prefs.dark
         Prefs.autoGif = prefs.autoGif
         Prefs.autoVoice = prefs.autoVoice
+        Prefs.silent = prefs.silent
     }
     Connections { target: Theme; function onDarkChanged() { prefs.dark = Theme.dark } }
     Connections {
         target: Prefs
         function onAutoGifChanged() { prefs.autoGif = Prefs.autoGif }
         function onAutoVoiceChanged() { prefs.autoVoice = Prefs.autoVoice }
+        function onSilentChanged() { prefs.silent = Prefs.silent }
     }
 
     // the first page: the sign-in until Telegram says we are in, then the chats

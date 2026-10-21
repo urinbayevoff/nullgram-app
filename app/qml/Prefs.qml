@@ -6,4 +6,5 @@ import QtQuick
 QtObject {
     property bool autoGif: true         // GIFs come down and play by themselves
     property bool autoVoice: true       // voice notes and round videos come down by themselves
+    property string silent: ""          // the channels whose posts go without a sound (their 🔔 off): ids, comma between
 }

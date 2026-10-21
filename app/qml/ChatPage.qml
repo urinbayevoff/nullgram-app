@@ -34,6 +34,20 @@ Page {
         return !!n && n.mute_for > 0
     }
     property bool muted: isMuted()
+    // a channel's posts without a sound for its subscribers (the field's 🔔, kept per channel as Telegram does)
+    readonly property bool silent: channel && Prefs.silent.split(",").indexOf(String(chatId)) >= 0
+    function setSilent(on) {
+        const ids = Prefs.silent.split(",").filter((x) => x && x !== String(chatId))
+        if (on)
+            ids.push(String(chatId))
+        Prefs.silent = ids.join(",")
+        toast(on ? "Obunachilar xabarni ovozsiz oladi" : "Obunachilar xabarni ovoz bilan oladi")
+    }
+    // who asked to join by a link that needs an admin (the panel under the header; × hides it until more ask)
+    readonly property var asking: chat && chat.pending_join_requests && chat.pending_join_requests.total_count > 0
+                                  ? chat.pending_join_requests : null
+    property int askingHidden: 0
+    readonly property bool askingShown: !!asking && asking.total_count !== askingHidden && !thread
     property string threadOf: ""        // the channel's name, under "Izohlar"
     property var threadRoot: []         // the post itself (its copy in the group): over the oldest comment
     // the post under the comments once they have all come (TDLib's thread history leaves it out)
@@ -474,6 +488,9 @@ Page {
             // a channel post with a discussion group: its comments (-1: none can be left)
             comments: m.is_channel_post && page.channel && m.interaction_info && m.interaction_info.reply_info
                       ? m.interaction_info.reply_info.reply_count : -1,
+            // a group's message: how many answered it (Telegram-iOS's ↩ 9 by the time)
+            replies: !m.is_channel_post && m.interaction_info && m.interaction_info.reply_info
+                     ? m.interaction_info.reply_info.reply_count : 0,
             edited: m.edit_date > 0,
             replyId: r ? r.message_id : 0,
             quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : ""),
@@ -936,6 +953,8 @@ Page {
             messages.setProperty(i, "views", info ? info.view_count : 0)
             if (page.channel && info && info.reply_info)
                 messages.setProperty(i, "comments", info.reply_info.reply_count)
+            else if (!page.channel)
+                messages.setProperty(i, "replies", info && info.reply_info ? info.reply_info.reply_count : 0)
         }
         function onFileUpdated(f) {
             const ids = page.fileMsgs[f.id]
@@ -1049,6 +1068,7 @@ Page {
                 required property string reacts     // its reactions, JSON: [{ e, n, mine }]
                 required property bool isPinned
                 required property int comments      // a channel post's comments (-1: none)
+                required property int replies       // a group message's answers
                 required property string said       // a service message: its words, in a pill in the middle
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
@@ -1447,15 +1467,43 @@ Page {
                             radius: height / 2
                             color: Qt.rgba(0, 0, 0, 0.4)
                         }
-                        Text {
+                        Row {           // the time: 📌, 👁 views, ↩ answers, edited, when, ✓ (Telegram-iOS's order)
                             id: stamp
                             anchors.right: parent.right; anchors.rightMargin: item.overlaid || item.jumbo ? (item.bare ? 8 : 12) : 10
                             anchors.bottom: parent.bottom; anchors.bottomMargin: bubble.tail + (item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6)
-                            textFormat: Text.StyledText
-                            text: (item.isPinned ? "📌 " : "") + (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
-                                  (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid || item.jumbo ? "white" : Theme.check) + "'>✓</font>") : "")
-                            color: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
-                            font.family: Theme.font; font.pixelSize: 12
+                            spacing: 2
+                            readonly property color ink: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
+                            Icon {
+                                visible: item.views > 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14; height: 14
+                                name: "eye"; color: stamp.ink
+                            }
+                            Text {
+                                visible: item.views > 0
+                                text: store.short(item.views) + " "
+                                color: stamp.ink
+                                font.family: Theme.font; font.pixelSize: 12
+                            }
+                            Icon {
+                                visible: item.replies > 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 13; height: 13
+                                name: "reply"; color: stamp.ink
+                            }
+                            Text {
+                                visible: item.replies > 0
+                                text: item.replies + " "
+                                color: stamp.ink
+                                font.family: Theme.font; font.pixelSize: 12
+                            }
+                            Text {
+                                textFormat: Text.StyledText
+                                text: (item.isPinned ? "📌 " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
+                                      (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid || item.jumbo ? "white" : Theme.check) + "'>✓</font>") : "")
+                                color: stamp.ink
+                                font.family: Theme.font; font.pixelSize: 12
+                            }
                         }
                         Item {          // a channel post's comments: how many, a tap opens them
                             visible: bubble.tail > 0
@@ -1583,56 +1631,88 @@ Page {
             }
         }
 
-        Rectangle {          // the header: back, the name and what it is
-            id: bar
+        Item {               // the header, Telegram-iOS 26's: three glass pieces over the chat — ‹ and the
+            id: bar          // chats waiting unread, the name and what it is, the picture (owner's iPad 26204/26206)
             z: 3
-            width: parent.width; height: 56
-            color: Theme.bar
-            Row {               // ‹ and the chats with unread messages waiting behind it (Telegram-iOS)
-                x: 8; anchors.verticalCenter: parent.verticalCenter
-                spacing: 4
-                opacity: backHit.pressed ? 0.4 : 1
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "‹"
-                    color: Theme.accent
-                    font.family: Theme.font; font.pixelSize: 34
-                }
-                Text {
-                    visible: store.unreadChats > 0
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: store.unreadChats > 99 ? "99+" : store.unreadChats
-                    color: Theme.accent
-                    font.family: Theme.font; font.pixelSize: 16
+            width: parent.width; height: 60
+            Rectangle {      // iOS 26's edge: what scrolls up fades out under the glass
+                width: parent.width; height: parent.height + pinBar.height + 16
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(Theme.glass.r, Theme.glass.g, Theme.glass.b, 0.7) }
+                    GradientStop { position: 0.6; color: Qt.rgba(Theme.glass.r, Theme.glass.g, Theme.glass.b, 0.35) }
+                    GradientStop { position: 1; color: Qt.rgba(Theme.glass.r, Theme.glass.g, Theme.glass.b, 0) }
                 }
             }
-            MouseArea {          // the back button: the bar's whole height and 72 pt in, as iOS takes it
+            Glass {          // ‹ 24
+                id: backCap
+                x: 10; y: 8
+                width: backRow.width + 26; height: 44
+                opacity: backHit.pressed ? 0.5 : 1
+                Row {
+                    id: backRow
+                    x: 12; anchors.verticalCenter: parent.verticalCenter
+                    spacing: 5
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset: -2
+                        text: "‹"
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 34; font.weight: Font.Light
+                    }
+                    Rectangle {
+                        visible: store.unreadChats > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.max(height, backCount.implicitWidth + 12); height: 20; radius: 10
+                        color: Theme.text
+                        Text {
+                            id: backCount
+                            anchors.centerIn: parent
+                            text: store.unreadChats > 99 ? "99+" : store.unreadChats
+                            color: Theme.bg
+                            font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                        }
+                    }
+                }
+            }
+            MouseArea {          // the back button: the bar's whole height and from the edge, as iOS takes it
                 id: backHit
-                width: 72; height: parent.height
+                width: backCap.x + backCap.width + 4; height: parent.height
                 onClicked: page.nav.pop()
             }
-            Column {
-                anchors.centerIn: parent
-                width: parent.width - 120
-                Text {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
-                    text: page.thread ? "Izohlar" : store.title(page.chat)
-                    color: Theme.text
-                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
-                }
-                Text {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
-                    text: page.thread ? page.threadOf : (store.seen, page.now, store.status(page.chat, page.now))     // (re-read when either changes)
-                    visible: text !== ""
-                    color: text === "onlayn" || text.endsWith("...") ? Theme.accent : Theme.grey
-                    font.family: Theme.font; font.pixelSize: 13
+            Glass {          // the name, and under it what it is
+                id: titleCap
+                readonly property real room: bar.width - 2 * Math.max(backCap.x + backCap.width, bar.width - face.x) - 16
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: 8
+                width: Math.min(room, Math.max(titleText.implicitWidth, subText.visible ? subText.implicitWidth : 0) + 40)
+                height: 44
+                opacity: titleHit.pressed ? 0.6 : 1
+                Column {
+                    anchors.centerIn: parent
+                    width: parent.width - 28
+                    Text {
+                        id: titleText
+                        width: parent.width
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        text: page.thread ? "Izohlar" : store.title(page.chat)
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        id: subText
+                        width: parent.width
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        text: page.thread ? page.threadOf : (store.seen, page.now, store.status(page.chat, page.now))     // (re-read when either changes)
+                        visible: text !== ""
+                        color: text === "onlayn" || text.endsWith("...") ? Theme.accent : Theme.grey
+                        font.family: Theme.font; font.pixelSize: 12
+                    }
                 }
             }
             MouseArea {          // the title, or the picture: the page about the chat (in comments: the search)
+                id: titleHit
                 anchors.left: backHit.right; anchors.right: parent.right
                 height: parent.height
                 onClicked: {
@@ -1643,9 +1723,10 @@ Page {
                 }
             }
             Avatar {
+                id: face
                 anchors.right: parent.right; anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                width: 38; height: 38
+                y: 8
+                width: 44; height: 44
                 source: page.chat ? store.photoPath(page.chat) : ""
                 letters: page.chat ? store.letters(page.chat.title) : ""
                 tint: store.tints[Math.abs(page.chatId) % store.tints.length]
@@ -1734,42 +1815,98 @@ Page {
             }
         }
 
-        Rectangle {          // the pinned message under the header (Telegram-iOS's ChatPinnedMessageTitlePanelNode)
-            id: pinBar
+        Item {               // under the header, one glass panel as Telegram-iOS 26's (owner's iPad 26204/26206):
+            id: pinBar       // who asks to join (admins), the pinned message (ChatPinnedMessageTitlePanelNode)
             z: 3
             y: bar.height
             width: parent.width
-            height: page.pinned ? 48 : 0
+            height: panel.height > 0 ? panel.height + 8 : 0
             visible: height > 0
-            color: Theme.bar
-            Rectangle { x: 14; y: 9; width: 2.5; height: 30; radius: 1.25; color: Theme.accent }
-            Text {
-                x: 26; y: 6
-                text: "Qadalgan xabar"
-                color: Theme.accent
-                font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
-            }
-            Text {
-                x: 26; y: 25
-                width: parent.width - x - 48
-                elide: Text.ElideRight
-                maximumLineCount: 1
-                textFormat: Text.PlainText
-                text: page.pinned ? page.pinned.text.replace(/\s+/g, " ") : ""
-                color: Theme.text
-                font.family: Theme.font; font.pixelSize: 14
-            }
-            Icon {
-                anchors.right: parent.right; anchors.rightMargin: 16
-                anchors.verticalCenter: parent.verticalCenter
-                width: 20; height: 20
-                name: "pin"
-                color: Theme.grey
-            }
-            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 0.5; color: Theme.separator }
-            MouseArea {
-                anchors.fill: parent
-                onClicked: page.goTo(page.pinned.id)
+            Glass {
+                id: panel
+                x: 10; y: 2
+                width: parent.width - 20
+                height: (page.askingShown ? 48 : 0) + (page.pinned ? 48 : 0)
+                radius: 20
+                clip: true
+                Item {          // "N ta qo'shilish so'rovi": the first one's picture, a tap lists them, × hides
+                    id: askRow
+                    width: parent.width; height: page.askingShown ? 48 : 0
+                    visible: height > 0
+                    opacity: askHit.pressed ? 0.6 : 1
+                    property string photo: ""
+                    readonly property var first: page.asking && page.asking.user_ids.length
+                                                 ? (store.seen, store.users[page.asking.user_ids[0]]) : null
+                    onFirstChanged: { photo = ""; if (first) store.userPhoto(first, (p) => askRow.photo = p) }
+                    Avatar {
+                        x: 8; anchors.verticalCenter: parent.verticalCenter
+                        width: 34; height: 34
+                        source: askRow.photo
+                        letters: askRow.first ? store.letters(askRow.first.first_name + " " + askRow.first.last_name) : ""
+                        tint: store.tints[Math.abs(askRow.first ? askRow.first.id : 0) % store.tints.length]
+                    }
+                    Text {
+                        anchors.centerIn: parent
+                        width: parent.width - 120
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        text: page.asking ? store.count(page.asking.total_count) + " ta qo'shilish so'rovi" : ""
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 15
+                    }
+                    MouseArea {
+                        id: askHit
+                        anchors.fill: parent
+                        onClicked: page.nav.push(joinPage, { chatId: page.chatId })
+                    }
+                    Icon {
+                        anchors.right: parent.right; anchors.rightMargin: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 20; height: 20
+                        name: "cross"
+                        color: Theme.text
+                        MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: page.askingHidden = page.asking.total_count }
+                    }
+                    Rectangle {
+                        visible: !!page.pinned
+                        x: 14; anchors.bottom: parent.bottom; width: parent.width - 28; height: 0.5; color: Theme.separator
+                    }
+                }
+                Item {          // the pinned message: a tap goes to it
+                    y: askRow.height
+                    width: parent.width; height: page.pinned ? 48 : 0
+                    visible: height > 0
+                    opacity: pinHit.pressed ? 0.6 : 1
+                    Rectangle { x: 14; y: 9; width: 2.5; height: 30; radius: 1.25; color: Theme.accent }
+                    Text {
+                        x: 26; y: 6
+                        text: "Qadalgan xabar"
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        x: 26; y: 25
+                        width: parent.width - x - 48
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                        textFormat: Text.PlainText
+                        text: page.pinned ? page.pinned.text.replace(/\s+/g, " ") : ""
+                        color: Theme.grey
+                        font.family: Theme.font; font.pixelSize: 14
+                    }
+                    Icon {
+                        anchors.right: parent.right; anchors.rightMargin: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 20; height: 20
+                        name: "pin"
+                        color: Theme.text
+                    }
+                    MouseArea {
+                        id: pinHit
+                        anchors.fill: parent
+                        onClicked: page.goTo(page.pinned.id)
+                    }
+                }
             }
         }
 
@@ -1881,16 +2018,34 @@ Page {
                 TextEdit {
                     id: field
                     x: 14; y: 8
-                    width: parent.width - 28
+                    width: parent.width - 28 - (bell.visible ? 30 : 0)
                     wrapMode: TextEdit.Wrap
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16
                     Text {
                         visible: !field.text && !field.preeditText
-                        text: "Xabar"
+                        text: page.channel ? "Xabar tarqatish" : "Xabar"
                         color: Theme.grey
                         font: field.font
                     }
+                }
+                Icon {           // a channel's 🔔: the post with or without a sound (Telegram-iOS's silent posting)
+                    id: bell
+                    visible: page.channel && !page.editing
+                    anchors.right: parent.right; anchors.rightMargin: 10
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: (36 - height) / 2
+                    width: 22; height: 22
+                    name: "bell"
+                    color: Theme.grey
+                    Rectangle {     // the stroke through it when silent
+                        visible: page.silent
+                        anchors.centerIn: parent
+                        width: 2; height: 26; radius: 1
+                        rotation: -45
+                        color: Theme.grey
+                        border.color: Theme.field; border.width: 0.5
+                    }
+                    MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: page.setSilent(!page.silent) }
                 }
             }
             Rectangle {          // recording: the time, and how to let it go (over the field)
@@ -1971,7 +2126,7 @@ Page {
                             page.fresh()
                         const at = field.mapToItem(page, 0, 0)
                         page.flying = { text: t, x: at.x, y: at.y }
-                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0, page.thread)
+                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0, page.thread, page.silent)
                         page.replying = null
                         field.text = ""
                         list.positionViewAtBeginning()
@@ -1982,6 +2137,7 @@ Page {
     }
 
     Component { id: infoPage; ChatInfoPage {} }
+    Component { id: joinPage; JoinRequestsPage {} }
     PhotoViewer {
         id: viewer
         store: page.store
@@ -2015,7 +2171,7 @@ Page {
         onSend: (picked, asFiles) => {
             if (page.gap)
                 page.fresh()
-            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles, page.thread)
+            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles, page.thread, page.silent)
             field.text = ""
             page.replying = null
             list.down = true
@@ -2027,7 +2183,7 @@ Page {
         id: toastBox
         z: 25
         anchors.horizontalCenter: parent.horizontalCenter
-        y: bar.height + 12
+        y: bar.height + pinBar.height + 12
         width: Math.min(parent.width - 40, toastText.implicitWidth + 28); height: toastText.implicitHeight + 16
         radius: height / 2
         color: Qt.rgba(0, 0, 0, 0.75)
@@ -2098,7 +2254,7 @@ Page {
         const v = td.voice(at)
         if (page.gap)
             page.fresh()
-        store.sendVoice(chatId, at, v.duration, v.waveform, replying ? replying.id : 0, thread)
+        store.sendVoice(chatId, at, v.duration, v.waveform, replying ? replying.id : 0, thread, silent)
         replying = null
         list.down = true
         list.positionViewAtBeginning()
