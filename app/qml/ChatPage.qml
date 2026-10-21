@@ -35,6 +35,15 @@ Page {
     }
     property bool muted: isMuted()
     property string threadOf: ""        // the channel's name, under "Izohlar"
+    property var threadRoot: []         // the post itself (its copy in the group): over the oldest comment
+    // the post under the comments once they have all come (TDLib's thread history leaves it out)
+    function withRoot(got, done) {
+        if (!thread || !done)
+            return got
+        const root = threadRoot.filter((m) => !got.some((g) => g.id === m.id))
+        threadRoot = []
+        return got.concat(root)
+    }
     ready: false
     property bool loading: false
     property bool more: true
@@ -113,10 +122,10 @@ Page {
         gap = false
         more = true
         list.down = true
-        store.history(chatId, 0, 30, (got) => {
+        store.history(chatId, 0, 30, (got, failed) => {
             if (!page)          // closed before TDLib answered
                 return
-            page.add(got)
+            page.add(page.withRoot(got, !failed && got.length < 30))
             list.positionViewAtBeginning()
             page.ready = true
             Qt.callLater(page.seen)
@@ -438,7 +447,10 @@ Page {
             }
         }
         const words = store.plain(m.content)
-        const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" ? m.reply_to : null
+        // in a post's comments the post itself goes plain and an answer to it has no quote (as Telegram has them)
+        const root = thread && m.id === thread
+        const r = m.reply_to && m.reply_to["@type"] === "messageReplyToMessage" &&
+                  !(thread && m.reply_to.message_id === thread) ? m.reply_to : null
         let quote = null
         if (r && r.chat_id === chatId) {
             quote = quotes[r.message_id]
@@ -449,7 +461,7 @@ Page {
         }
         return {
             msgId: m.id, out: m.is_outgoing, date: m.date, text: s.text, kind: s.kind,
-            sender: page.group && !m.is_outgoing ? store.senderName(m.sender_id, false) : "",
+            sender: page.group && !m.is_outgoing && !root ? store.senderName(m.sender_id, false) : "",
             senderKey: JSON.stringify(m.sender_id), sending: !!m.sending_state,
             tint: store.tints[Math.abs(m.sender_id.user_id || m.sender_id.chat_id || 0) % store.tints.length],
             time: Qt.formatTime(new Date(m.date * 1000), "HH:mm"),
@@ -467,7 +479,7 @@ Page {
             got: p.main ? store.progress(p.main) : -1,
             path: p.main && p.main.local.is_downloading_completed ? p.main.local.path : "",
             jumbo: words !== null && !r && !m.forward_info ? store.emojiCount(words.trim()) : 0,
-            fwd: store.origin(m.forward_info),
+            fwd: root ? "" : store.origin(m.forward_info),
             reacts: JSON.stringify(store.reactions(m.interaction_info)),
             isPinned: !!m.is_pinned
         }
@@ -595,7 +607,7 @@ Page {
         store.history(chatId, messages.get(messages.count - 1).msgId, 40, (got, failed) => {
             if (!page)
                 return
-            page.add(got)
+            page.add(page.withRoot(got, !failed && got.length < 40))
             page.more = failed || got.length > 0
             page.loading = false
             if (!failed)
@@ -621,9 +633,27 @@ Page {
     }
 
     // ---- the menu ------------------------------------------------------------
+    // testing (NULLGRAM_SAY with a channel): the newest post's comments open and these lines go there
+    property string say: ""
+    onReadyChanged: {
+        if (!ready || !say)
+            return
+        const t = say
+        say = ""
+        if (thread) {
+            for (const line of t.split("\n"))
+                if (line)
+                    store.sendText(chatId, line, 0, thread)
+        } else if (messages.count) {
+            sayLater.text = t
+            sayLater.start()            // (once this page is in: a push while one moves is dropped)
+        }
+    }
+    Timer { id: sayLater; property string text; interval: 900; onTriggered: page.openComments(messages.get(0).msgId, text) }
+
     // a post's comments, in a page of their own over this one (the discussion group's thread)
     property Component commentsPage: null
-    function openComments(id) {
+    function openComments(id, say) {
         store.send({ "@type": "getMessageThread", chat_id: chatId, message_id: id }, (r) => {
             if (!page)
                 return
@@ -633,7 +663,7 @@ Page {
             }
             if (!page.commentsPage)
                 page.commentsPage = Qt.createComponent("ChatPage.qml")
-            page.nav.push(page.commentsPage, { chatId: r.chat_id, thread: r.message_thread_id,
+            page.nav.push(page.commentsPage, { chatId: r.chat_id, thread: r.message_thread_id, threadRoot: r.messages || [], say: say || "",
                                                threadOf: page.chat ? page.chat.title : "" })
         })
     }

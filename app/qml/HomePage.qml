@@ -43,10 +43,11 @@ Page {
                 else
                     console.warn("nullgram: NULLGRAM_OPEN channel: none read with comments")
             }
-            else if (td.devOpen !== "me") {      // an id, or a chat's name
-                const c = home.store.chats[td.devOpen] ||
-                          Object.values(home.store.chats).find((c) => c.title === td.devOpen)
-                if (c && c.unread_count === 0)
+            else if (td.devOpen !== "me") {      // an id, or a chat's name ("!" first: even unread -- our own test chats)
+                const force = td.devOpen.startsWith("!"), key = force ? td.devOpen.slice(1) : td.devOpen
+                const c = home.store.chats[key] ||
+                          Object.values(home.store.chats).find((c) => c.title === key)
+                if (c && (c.unread_count === 0 || force))
                     home.devPush(c.id)
                 else
                     console.warn("nullgram: NULLGRAM_OPEN", td.devOpen, c ? "has unread messages: not opened" : "not found")
@@ -57,6 +58,11 @@ Page {
     }
     Component { id: devChat; ChatPage {} }
     function devPush(id) {
+        const c = store.chats[id]
+        if (c && c.type.is_channel) {           // a channel: what to say goes to its newest post's comments
+            nav.push(devChat, { chatId: id, say: td.devSay })
+            return
+        }
         nav.push(devChat, { chatId: id })
         for (const line of td.devSay.split("\n"))
             if (line)
