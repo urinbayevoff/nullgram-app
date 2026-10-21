@@ -1516,6 +1516,36 @@ Page {
             }
         }
 
+        Rectangle {          // a chat with nothing in it yet: a card in the middle, as Telegram-iOS's
+            visible: page.ready && messages.count === 0
+            anchors.centerIn: parent
+            transform: Translate { y: -page.kb / 2 }
+            width: Math.min(parent.width - 80, 240); height: emptyText.height + 32
+            radius: 18
+            color: Theme.dayPill
+            Column {
+                id: emptyText
+                anchors.centerIn: parent
+                width: parent.width - 32
+                spacing: 6
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: "Hali xabar yo'q"
+                    color: "white"
+                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
+                }
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: page.canPost ? "Birinchi xabarni yozing." : "Bu yerga hali hech narsa yuborilmagan."
+                    color: "white"
+                    font.family: Theme.font; font.pixelSize: 14
+                }
+            }
+        }
+
         Rectangle {          // the header: back, the name and what it is
             id: bar
             z: 3
