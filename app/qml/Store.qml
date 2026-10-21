@@ -352,15 +352,16 @@ QtObject {
     // ---- what a row shows ----------------------------------------------------
     function row(c) {
         const m = c.last_message
-        let text = m ? preview(m.content) : ""
+        const said = m ? service(m, c) : null
+        let text = said !== null ? said : m ? preview(m.content) : ""
         let who = ""
         const draft = c.draft_message && c.draft_message.content
         if (draft && draft["@type"] === "draftMessageContentText" && draft.text.text) {
             who = "Qoralama"
             text = draft.text.text
-        } else if (m && m.is_outgoing && c.type["@type"] !== "chatTypePrivate") {
+        } else if (said === null && m && m.is_outgoing && c.type["@type"] !== "chatTypePrivate") {
             who = "Siz"
-        } else if (m && (c.type["@type"] === "chatTypeBasicGroup" ||
+        } else if (said === null && m && (c.type["@type"] === "chatTypeBasicGroup" ||
                          (c.type["@type"] === "chatTypeSupergroup" && !c.type.is_channel))) {
             who = senderName(m.sender_id, true)
         }
@@ -541,6 +542,54 @@ QtObject {
                     if (k !== "@type")
                         words_of(v[k], out)
         }
+    }
+
+    // a service message as Telegram words it (who did what), in a pill in the middle of the chat;
+    // null when the message is not one. `chat` tells a channel from a group.
+    function service(m, chat) {
+        const c = m.content, t = c["@type"]
+        const chan = !!(chat && chat.type.is_channel)
+        const me_ = m.is_outgoing ? "Siz" : senderName(m.sender_id, false) || (chat ? chat.title : "")
+        const user = (id) => id === (me && me.id) ? "sizni" : (senderName({ "@type": "messageSenderUser", user_id: id }, false) || "kimdir") + "ni"
+        const of = chan ? "kanal" : "guruh"
+        switch (t) {
+        case "messageBasicGroupChatCreate":
+        case "messageSupergroupChatCreate":
+            return chan ? "Kanal yaratildi" : me_ + " «" + c.title + "» guruhini yaratdi"
+        case "messageChatAddMembers": {
+            const others = c.member_user_ids.filter((id) => id !== m.sender_id.user_id)
+            return others.length ? me_ + " " + others.map(user).join(", ") + " qo'shdi" : me_ + " " + of + "ga qo'shildi"
+        }
+        case "messageChatJoinByLink": return me_ + " havola orqali qo'shildi"
+        case "messageChatJoinByRequest": return me_ + " " + of + "ga qo'shildi"
+        case "messageChatDeleteMember":
+            return c.user_id === m.sender_id.user_id ? me_ + " " + of + "dan chiqdi" : me_ + " " + user(c.user_id) + " chiqardi"
+        case "messagePinMessage": return chan ? "Xabar qadaldi" : me_ + " xabarni qadadi"
+        case "messageChatChangeTitle":
+            return (chan ? "Kanal nomi" : me_ + " guruh nomini") + " «" + c.title + "»" + (chan ? "ga o'zgardi" : "ga o'zgartirdi")
+        case "messageChatChangePhoto": return chan ? "Kanal rasmi o'zgardi" : me_ + " guruh rasmini o'zgartirdi"
+        case "messageChatDeletePhoto": return chan ? "Kanal rasmi o'chirildi" : me_ + " guruh rasmini o'chirdi"
+        case "messageChatUpgradeTo":
+        case "messageChatUpgradeFrom": return "Guruh superguruhga aylandi"
+        case "messageContactRegistered": return me_ + " Telegram'ga qo'shildi"
+        case "messageScreenshotTaken": return me_ + " skrinshot oldi"
+        case "messageForumTopicCreated": return "«" + c.name + "» mavzusi yaratildi"
+        case "messageForumTopicEdited": return me_ + " mavzuni o'zgartirdi"
+        case "messageVideoChatStarted": return chan ? "Jonli efir boshlandi" : me_ + " video chatni boshladi"
+        case "messageVideoChatEnded": return (chan ? "Jonli efir" : "Video chat") + " tugadi"
+        case "messageVideoChatScheduled": return (chan ? "Jonli efir" : "Video chat") + " rejalashtirildi"
+        case "messageInviteVideoChatParticipants": return me_ + " video chatga taklif qildi"
+        case "messageChatSetTheme": return me_ + " chat mavzusini o'zgartirdi"
+        case "messageChatSetBackground": return me_ + " chat fonini o'zgartirdi"
+        case "messageChatSetMessageAutoDeleteTime":
+            return c.message_auto_delete_time ? "Avto-o'chirish yoqildi" : "Avto-o'chirish o'chirildi"
+        case "messageChatBoost": return me_ + " " + of + "ni kuchaytirdi"
+        case "messageCustomServiceAction": return c.text
+        case "messageBotWriteAccessAllowed": return "Botga yozishga ruxsat berildi"
+        case "messageGiveawayCreated": return "Konkurs boshlandi"
+        case "messageGiveawayCompleted": return "Konkurs yakunlandi"
+        }
+        return null
     }
 
     // a kind we have no word for yet: said once in the log, so it can be added

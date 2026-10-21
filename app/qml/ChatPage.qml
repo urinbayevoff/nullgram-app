@@ -460,7 +460,7 @@ Page {
             quote = { name: "", text: store.preview(r.content) }
         }
         return {
-            msgId: m.id, out: m.is_outgoing, date: m.date, text: s.text, kind: s.kind,
+            msgId: m.id, out: m.is_outgoing, date: m.date, text: s.text, kind: s.kind, said: store.service(m, chat) || "",
             sender: page.group && !m.is_outgoing && !root ? store.senderName(m.sender_id, false) : "",
             senderKey: JSON.stringify(m.sender_id), sending: !!m.sending_state,
             tint: store.tints[Math.abs(m.sender_id.user_id || m.sender_id.chat_id || 0) % store.tints.length],
@@ -974,6 +974,7 @@ Page {
                 required property string reacts     // its reactions, JSON: [{ e, n, mine }]
                 required property bool isPinned
                 required property int comments      // a channel post's comments (-1: none)
+                required property string said       // a service message: its words, in a pill in the middle
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -1006,7 +1007,7 @@ Page {
                 readonly property bool unreadBar: msgId === page.firstUnread
                 readonly property real above: (newDay ? 38 : 0) + (unreadBar ? 36 : 0) + (first ? 8 : 2)
                 width: list.width
-                height: bubble.height + above
+                height: (said ? pill.height + 4 : bubble.height) + above
 
                 Rectangle {
                     visible: item.newDay
@@ -1042,11 +1043,33 @@ Page {
                     }
                 }
 
+                Rectangle {          // a service message (who did what): no bubble, a pill in the middle
+                    id: pill
+                    visible: item.said !== ""
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: item.above + 2
+                    width: Math.min(saidText.implicitWidth, item.width - 80) + 20
+                    height: saidText.height + 8; radius: Math.min(11, height / 2)
+                    color: Theme.dayPill
+                    Text {
+                        id: saidText
+                        anchors.centerIn: parent
+                        width: Math.min(implicitWidth, item.width - 80)
+                        text: item.said
+                        wrapMode: Text.Wrap
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
+                        color: "white"
+                        font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                    }
+                }
+
                 // a message just sent flies here from where its text was in the field: it starts
                 // there (moved by mover's x, y) and comes to rest on Telegram-iOS's two curves
                 // (ChatMessageTransitionNode.swift), on the render thread
                 Item {
                     id: mover
+                    visible: !item.said
                     width: item.width; height: item.height
                     Item {
                         id: bubble
