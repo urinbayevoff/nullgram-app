@@ -126,6 +126,7 @@ QtObject {
             store.change(u.chat_id, { last_read_outbox_message_id: u.last_read_outbox_message_id })
             store.readOutbox(u.chat_id, u.last_read_outbox_message_id)
         },
+        updateChatMessageAutoDeleteTime: (u) => store.change(u.chat_id, { message_auto_delete_time: u.message_auto_delete_time }),
         updateChatPendingJoinRequests: (u) => store.change(u.chat_id, { pending_join_requests: u.pending_join_requests }),
         updateChatNotificationSettings: (u) => store.change(u.chat_id, { notification_settings: u.notification_settings }),
         updateChatDraftMessage: (u) => {
@@ -522,6 +523,23 @@ QtObject {
     // 12345 -> "12 345"
     function count(n) {
         return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ")
+    }
+
+    // how long messages stay: 1 kun, 1 hafta, 1 oy (by whole months, weeks, days, hours, minutes)
+    function lasting(secs) {
+        const units = [[2678400, "oy"], [604800, "hafta"], [86400, "kun"], [3600, "soat"], [60, "daqiqa"]]
+        for (const u of units)
+            if (secs >= u[0] && secs % u[0] === 0)
+                return secs / u[0] + " " + u[1]
+        return secs + " soniya"
+    }
+    // the same in the field's ⏱: 1k, 1h, 1o
+    function lastingShort(secs) {
+        const units = [[2678400, "o"], [604800, "h"], [86400, "k"], [3600, "s"], [60, "d"]]
+        for (const u of units)
+            if (secs >= u[0])
+                return Math.floor(secs / u[0]) + u[1]
+        return secs + "s"
     }
 
     // a post's views as Telegram-iOS shows them by the time: 957, 12.3K, 1.2M

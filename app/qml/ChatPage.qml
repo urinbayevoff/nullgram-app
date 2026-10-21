@@ -47,6 +47,28 @@ Page {
     readonly property var asking: chat && chat.pending_join_requests && chat.pending_join_requests.total_count > 0
                                   ? chat.pending_join_requests : null
     property int askingHidden: 0
+    // the field's ⏱: messages here go by themselves after a while (setChatMessageAutoDeleteTime); in a
+    // private chat anyone sets it, in a group or channel its owner or an admin who may change its info
+    readonly property int autoDelete: chat ? chat.message_auto_delete_time || 0 : 0
+    readonly property bool canAutoDelete: {
+        if (!chat || thread)
+            return false
+        const t = chat.type["@type"]
+        if (t === "chatTypePrivate")
+            return !store.isSaved(chat)
+        const g = (store.seen, store.groups[(t === "chatTypeBasicGroup" ? "b" + chat.type.basic_group_id : "s" + chat.type.supergroup_id)])
+        const st = g ? g.status : null
+        return !!st && (st["@type"] === "chatMemberStatusCreator" ||
+                        (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_change_info))
+    }
+    function setAutoDelete(secs) {
+        store.send({ "@type": "setChatMessageAutoDeleteTime", chat_id: chatId, message_auto_delete_time: secs }, (r) => {
+            if (r["@type"] === "error")
+                toast("O'zgartirib bo'lmadi")
+            else
+                toast(secs ? "Yangi xabarlar " + store.lasting(secs) + "dan keyin o'chadi" : "Avtomatik o'chirish o'chirildi")
+        })
+    }
     readonly property bool askingShown: !!asking && asking.total_count !== askingHidden && !thread
     property string threadOf: ""        // the channel's name, under "Izohlar"
     property var threadRoot: []         // the post itself (its copy in the group): over the oldest comment
@@ -2018,7 +2040,7 @@ Page {
                 TextEdit {
                     id: field
                     x: 14; y: 8
-                    width: parent.width - 28 - (bell.visible ? 30 : 0)
+                    width: parent.width - 28 - (bell.visible ? 30 : 0) - (clock.visible ? 30 : 0)
                     wrapMode: TextEdit.Wrap
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16
@@ -2029,10 +2051,38 @@ Page {
                         font: field.font
                     }
                 }
+                Item {           // ⏱: how long messages stay (Telegram-iOS's auto-delete button), the time when set
+                    id: clock
+                    visible: page.canAutoDelete && !page.editing
+                    anchors.right: parent.right; anchors.rightMargin: 10
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: (36 - height) / 2
+                    width: 22; height: 22
+                    Icon {
+                        visible: !page.autoDelete
+                        anchors.fill: parent
+                        name: "timer"
+                        color: Theme.grey
+                    }
+                    Rectangle {
+                        visible: page.autoDelete > 0
+                        anchors.centerIn: parent
+                        width: Math.max(22, clockText.implicitWidth + 8); height: 22; radius: 11
+                        color: "transparent"
+                        border.color: Theme.accent; border.width: 1.5
+                        Text {
+                            id: clockText
+                            anchors.centerIn: parent
+                            text: store.lastingShort(page.autoDelete)
+                            color: Theme.accent
+                            font.family: Theme.font; font.pixelSize: 11; font.weight: Font.DemiBold
+                        }
+                    }
+                    MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: timerMenu.show() }
+                }
                 Icon {           // a channel's 🔔: the post with or without a sound (Telegram-iOS's silent posting)
                     id: bell
                     visible: page.channel && !page.editing
-                    anchors.right: parent.right; anchors.rightMargin: 10
+                    anchors.right: clock.visible ? clock.left : parent.right; anchors.rightMargin: clock.visible ? 8 : 10
                     anchors.bottom: parent.bottom; anchors.bottomMargin: (36 - height) / 2
                     width: 22; height: 22
                     name: "bell"
@@ -2275,6 +2325,75 @@ Page {
             onErrorOccurred: (error, text) => {
                 page.recording = false
                 page.toast("Yozib bo'lmadi: " + text)
+            }
+        }
+    }
+
+    Item {               // ⏱'s choices, over the field as Telegram-iOS's context menu
+        id: timerMenu
+        z: 30
+        anchors.fill: parent
+        visible: false
+        function show() {
+            Qt.inputMethod.hide()
+            visible = true
+            card.scale = 0.01
+            grow.start()
+        }
+        MouseArea { anchors.fill: parent; onClicked: timerMenu.visible = false }
+        Rectangle {
+            id: card
+            anchors.right: parent.right; anchors.rightMargin: 16
+            anchors.bottom: parent.bottom; anchors.bottomMargin: page.foot + 8
+            width: 230; height: choices.height
+            radius: 16
+            color: Theme.menu
+            transformOrigin: Item.BottomRight
+            layer.enabled: true
+            ScaleAnimator { id: grow; target: card; from: 0.01; to: 1; duration: 420
+                            easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+            Column {
+                id: choices
+                width: parent.width
+                Text {
+                    x: 16; width: parent.width - 32
+                    topPadding: 10; bottomPadding: 6
+                    wrapMode: Text.Wrap
+                    text: "Yangi xabarlar shuncha vaqtdan keyin o'chadi"
+                    color: Theme.grey
+                    font.family: Theme.font; font.pixelSize: 13
+                }
+                Repeater {
+                    model: [0, 86400, 604800, 2678400]
+                    Rectangle {
+                        required property int modelData
+                        width: choices.width; height: 44
+                        color: choiceHit.pressed ? Theme.highlight : "transparent"
+                        Rectangle { width: parent.width; height: 0.5; color: Theme.separator }
+                        Text {
+                            x: 16; anchors.verticalCenter: parent.verticalCenter
+                            text: parent.modelData ? store.lasting(parent.modelData) : "O'chirilgan"
+                            color: Theme.text
+                            font.family: Theme.font; font.pixelSize: 16
+                        }
+                        Text {
+                            visible: page.autoDelete === parent.modelData
+                            anchors.right: parent.right; anchors.rightMargin: 16; anchors.verticalCenter: parent.verticalCenter
+                            text: "✓"
+                            color: Theme.accent
+                            font.family: Theme.font; font.pixelSize: 17; font.weight: Font.DemiBold
+                        }
+                        MouseArea {
+                            id: choiceHit
+                            anchors.fill: parent
+                            onClicked: {
+                                timerMenu.visible = false
+                                if (parent.modelData !== page.autoDelete)
+                                    page.setAutoDelete(parent.modelData)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
