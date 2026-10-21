@@ -22,11 +22,34 @@ Page {
         if (outside)
             return false
         if (!channel)
-            return true
+            return barred === ""
         const g = (store.seen, store.groups["s" + chat.type.supergroup_id])
         const st = g ? g.status : null
         return !!st && (st["@type"] === "chatMemberStatusCreator" ||
                         (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_post_messages))
+    }
+    // why we may not write here — a group whose admins let only themselves (or have barred us), a deleted
+    // account — said in the bar instead of the field; "" when we may
+    readonly property string barred: {
+        if (!chat || channel || outside)
+            return ""
+        const t = chat.type["@type"]
+        if (t === "chatTypePrivate") {
+            const u = (store.seen, store.users[chat.type.user_id])
+            return u && u.type["@type"] === "userTypeDeleted" ? "O'chirilgan hisob" : ""
+        }
+        if (t !== "chatTypeBasicGroup" && t !== "chatTypeSupergroup")
+            return ""
+        const g = (store.seen, store.groups[t === "chatTypeBasicGroup" ? "b" + chat.type.basic_group_id : "s" + chat.type.supergroup_id])
+        const k = g && g.status ? g.status["@type"] : ""
+        if (!k || k === "chatMemberStatusCreator" || k === "chatMemberStatusAdministrator")
+            return ""
+        if (k === "chatMemberStatusBanned" || k === "chatMemberStatusLeft")
+            return "Siz bu guruh a'zosi emassiz"
+        const mine = k === "chatMemberStatusRestricted"
+        const may = mine ? g.status.permissions : chat.permissions
+        const text = may ? (may.can_send_basic_messages !== undefined ? may.can_send_basic_messages : may.can_send_messages) : true
+        return text !== false ? "" : mine ? "Adminlar sizga bu yerda yozishni cheklagan" : "Bu guruhda faqat adminlar yoza oladi"
     }
     // a channel or a group we are not in (opened by a link): «Qo'shilish» in the bar
     readonly property bool outside: {
@@ -2470,18 +2493,22 @@ Page {
             height: visible ? 60 : 0
             Glass {
                 anchors.centerIn: parent
-                width: muteText.implicitWidth + 44; height: 44
+                width: muteText.width + 44; height: 44
                 opacity: muteHit.pressed ? 0.7 : 1
                 Text {
                     id: muteText
                     anchors.centerIn: parent
-                    text: page.outside ? "Qo'shilish" : page.muted ? "Sukutdan chiqarish" : "Sukut qilish"
-                    color: page.outside ? Theme.accent : Theme.text
-                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
+                    width: Math.min(implicitWidth, chanBar.width - 168)
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
+                    text: page.outside ? "Qo'shilish" : page.barred || (page.muted ? "Sukutdan chiqarish" : "Sukut qilish")
+                    color: page.outside ? Theme.accent : page.barred ? Theme.grey : Theme.text
+                    font.family: Theme.font; font.pixelSize: page.barred ? 13 : 16; font.weight: Font.Medium
                 }
                 MouseArea {
                     id: muteHit
                     anchors.fill: parent
+                    enabled: !page.barred
                     onClicked: {
                         if (page.outside)
                             return store.send({ "@type": "joinChat", chat_id: page.chatId }, store.check)

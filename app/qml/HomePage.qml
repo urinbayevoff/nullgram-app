@@ -24,7 +24,7 @@ Page {
         }
     }
 
-    // NULLGRAM_OPEN=<chat id>, its name, "me", "channel", "private" or "russian" (testing from the PC): that chat at once,
+    // NULLGRAM_OPEN=<chat id>, its name, "me", "channel", "private", "group", "barred" or "russian" (testing from the PC): that chat at once,
     // unless it has unread messages (opening it would read them)
     Timer {
         running: td.devOpen !== ""
@@ -60,6 +60,15 @@ Page {
                     home.devPush(c.id)
                 else
                     console.warn("nullgram: NULLGRAM_OPEN private: none read")
+            }
+            else if (td.devOpen === "barred") {      // a read group where only its admins write (the bar, not the field)
+                const all = Object.values(home.store.chats).filter((c) => c.permissions && c.unread_count === 0
+                    && (c.type["@type"] === "chatTypeBasicGroup" || (c.type["@type"] === "chatTypeSupergroup" && !c.type.is_channel)))
+                const c = all.find((c) => c.permissions.can_send_basic_messages === false || c.permissions.can_send_messages === false)
+                console.warn("nullgram: NULLGRAM_OPEN barred:", all.length, "groups read,", all.filter((c) =>
+                    c.permissions.can_send_basic_messages === false || c.permissions.can_send_messages === false).map((c) => c.title).join(" | "))
+                if (c)
+                    home.devPush(c.id)
             }
             else if (td.devOpen === "group") {       // the biggest group, all read (its members, for the page about it)
                 const size = (c) => {
