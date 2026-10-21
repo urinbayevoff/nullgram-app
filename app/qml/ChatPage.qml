@@ -157,7 +157,7 @@ Page {
             if (!unread) {
                 const t = page.indexOf(id)
                 if (t >= 0)
-                    list.positionViewAtIndex(t, ListView.Center)
+                    page.centre(t)
                 page.flashId = id
                 unflash.restart()
             }
@@ -629,7 +629,16 @@ Page {
     function jump(id) {
         const i = indexOf(id)
         if (i >= 0)
-            list.positionViewAtIndex(i, ListView.Center)
+            centre(i)
+    }
+    // a message in the middle of the screen; one taller than the room there from its top
+    function centre(i) {
+        list.positionViewAtIndex(i, ListView.Center)
+        const it = list.itemAtIndex(i)
+        if (it && it.height > list.height - bar.height - foot - 60) {
+            list.positionViewAtIndex(i, ListView.End)      // (the end of a bottom-to-top list: its top)
+            list.contentY = Math.max(list.originY, list.contentY - bar.height - 8)
+        }
     }
     // a message in the middle, lit up a moment: loaded here, else the history around it in place of these
     function goTo(id) {
@@ -670,6 +679,10 @@ Page {
     function showHit(k) {
         hit = k
         goTo(hits[k])
+    }
+    function focusFind() {
+        searching = true
+        findField.forceActiveFocus()
     }
     function stopSearch() {
         searching = false
@@ -1540,10 +1553,15 @@ Page {
                     font.family: Theme.font; font.pixelSize: 13
                 }
             }
-            MouseArea {          // (until there is a page about the chat: its title opens the search)
-                anchors.centerIn: parent
-                width: parent.width - 144; height: parent.height
-                onClicked: { page.searching = true; findField.forceActiveFocus() }
+            MouseArea {          // the title, or the picture: the page about the chat (in comments: the search)
+                anchors.left: backHit.right; anchors.right: parent.right
+                height: parent.height
+                onClicked: {
+                    if (page.thread)
+                        page.focusFind()
+                    else
+                        page.nav.push(infoPage, { chatId: page.chatId, chatPage: page })
+                }
             }
             Avatar {
                 anchors.right: parent.right; anchors.rightMargin: 10
@@ -1884,6 +1902,7 @@ Page {
         }
     }
 
+    Component { id: infoPage; ChatInfoPage {} }
     PhotoViewer {
         id: viewer
         onSave: if (page.viewing) page.save(page.viewing)
