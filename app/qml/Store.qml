@@ -16,6 +16,7 @@ QtObject {
     property var folders: []            // the user's chat folders: [{ id, name }], in their order
     property var folderUnread: ({})     // folder id -> its chats with unread messages, not muted
     property int folder: 0              // the list chatList shows: 0 the main one, else that folder
+    property var openChat: 0            // the chat on the screen (its new messages do not notify)
 
     readonly property ListModel chatList: ListModel {}     // the main list in Telegram's order
     property var chats: ({})
@@ -137,6 +138,13 @@ QtObject {
         updateFile: (u) => store.file(u.file),
         updateMessageIsPinned: (u) => store.messagePinned(u.chat_id, u.message_id, u.is_pinned),
         updateMessageInteractionInfo: (u) => store.messageInteraction(u.chat_id, u.message_id, u.interaction_info),
+        // TDLib's notifications (it knows the muted chats and takes them back when read): a banner
+        // for each new one, unless its chat is on the screen; the old ones at start are not news
+        updateNotificationGroup: (u) => {
+            for (const n of u.added_notifications)
+                if (n.type["@type"] === "notificationTypeNewMessage" && !n.is_silent && Date.now() / 1000 - n.date < 120)
+                    store.notify(u.chat_id, n.type.message, n.type.show_preview)
+        },
         updateUnreadChatCount: (u) => {
             if (u.chat_list["@type"] === "chatListMain")
                 store.unreadChats = u.unread_unmuted_count
@@ -178,6 +186,10 @@ QtObject {
         } else if (auth === "Ready") {
             qrLink = ""
             send({ "@type": "getMe" }, (m) => { store.me = m })
+            send({ "@type": "setOption", name: "notification_group_count_max",
+                   value: { "@type": "optionValueInteger", value: 10 } })
+            send({ "@type": "setOption", name: "notification_group_size_max",
+                   value: { "@type": "optionValueInteger", value: 3 } })
             send({ "@type": "loadChats", chat_list: { "@type": "chatListMain" }, limit: 200 })
         }
     }
@@ -296,6 +308,46 @@ QtObject {
         if (at >= 0)
             chatList.set(at, row(c))
     }
+
+    // ---- outside the app: banners, the tile, being online ------------------------
+    readonly property bool inFront: Qt.application.state === Qt.ApplicationActive
+    function notify(chatId, m, full) {
+        if (inFront && openChat === chatId)
+            return
+        const c = chats[chatId]
+        if (!c)
+            return
+        const group = c.type["@type"] === "chatTypeBasicGroup" || (c.type["@type"] === "chatTypeSupergroup" && !c.type.is_channel)
+        const who = group ? senderName(m.sender_id, true) : ""
+        td.notify(title(c), (who ? who + ": " : "") + (full ? preview(m.content) : "Yangi xabar"))
+    }
+
+    // the tile's back: the newest chats with unread messages (not muted), their count on the corner
+    // (a moment after the last change: messages come in bursts)
+    property Timer _tile: Timer {
+        interval: 1500
+        onTriggered: {
+            const rows = []
+            for (const id in store.chats) {
+                const c = store.chats[id]
+                const muted = c.notification_settings && c.notification_settings.mute_for > 0
+                const p = c.positions.find((q) => q.list["@type"] === "chatListMain")
+                if (p && c.unread_count > 0 && !muted)
+                    rows.push({ c: c, order: p.order })
+            }
+            rows.sort((a, b) => store.before(a.order, b.order) ? -1 : 1)
+            const lines = rows.slice(0, 3).map((r) => store.title(r.c) + ": " +
+                                               (r.c.last_message ? store.preview(r.c.last_message.content) : ""))
+            if (td)
+                td.tile("null", lines, store.unreadChats)
+        }
+    }
+    onUnreadChatsChanged: _tile.restart()
+    onChatChanged: _tile.restart()
+
+    // online only while it is on the screen (hidden in the background it still gets everything)
+    onInFrontChanged: if (auth === "Ready")
+        send({ "@type": "setOption", name: "online", value: { "@type": "optionValueBoolean", value: inFront } })
 
     // ---- what a row shows ----------------------------------------------------
     function row(c) {

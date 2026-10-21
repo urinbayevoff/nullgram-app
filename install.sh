@@ -34,8 +34,8 @@ mkdir -p "$(dirname "$a")" "$(dirname "$i")" ~/.local/share/applications
 cp ~/nullgram/icon.svg "$i"
 cat > "$a" <<'E'
 #!/bin/sh
-# one at a time: a second tap only brings the running one back (the shell does that by its window)
-pgrep -f '[n]ullgram/nullgram.py' >/dev/null && exit 0
+# one at a time: a second tap brings the running one back (hidden when it was closed: SIGUSR1 shows it)
+pid=$(pgrep -f '[n]ullgram/nullgram.py') && { kill -USR1 $pid; exit 0; }
 export QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1	# started by the shell, Qt would log to journald
 exec python3 "$HOME/nullgram/nullgram.py" "$@" > /tmp/nullgram.log 2>&1
 E

@@ -58,6 +58,7 @@ Page {
     }
 
     Component.onCompleted: {
+        store.openChat = chatId
         loadPinned()
         store.send({ "@type": "openChat", chat_id: chatId })
         if (chat && chat.type["@type"] === "chatTypeSupergroup") {   // its update may not have the count
@@ -137,7 +138,11 @@ Page {
             Qt.callLater(page.nearBottom)
         })
     }
-    Component.onDestruction: store.send({ "@type": "closeChat", chat_id: chatId })
+    Component.onDestruction: {
+        store.send({ "@type": "closeChat", chat_id: chatId })
+        if (store.openChat === chatId)
+            store.openChat = 0
+    }
 
     // older messages at the end; their quotes first, so a reply within the batch needs no request
     function add(got) {

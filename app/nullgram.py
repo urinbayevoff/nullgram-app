@@ -15,6 +15,8 @@ import json
 import hashlib
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -22,7 +24,7 @@ import threading
 # letters over 64 px are drawn from outlines every time, uncached; at the S10's 4x that is all of them
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
-from PySide6.QtCore import Property, QObject, QRectF, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QRectF, QSocketNotifier, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader, QPainter, QPainterPath
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
@@ -185,6 +187,37 @@ class Td(QObject):
 			out.append(value & 0xff)
 		return {"duration": max(1, round(n / 8000)), "waveform": base64.b64encode(bytes(out)).decode()}
 
+	@Slot(str, str)
+	def notify(self, title: str, body: str):
+		"""A banner through the desktop's notification service (ztnotifyd), by gdbus: its arguments
+		as GVariant text, so nothing in the message is read as anything else."""
+		def text(v):
+			return "'" + v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ") + "'"
+		try:
+			subprocess.Popen(["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+			                  "--object-path", "/org/freedesktop/Notifications",
+			                  "--method", "org.freedesktop.Notifications.Notify",
+			                  "'Nullgram'", "0", "''", text(title), text(body[:300]), "[]", "{}", "5000"],
+			                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		except OSError:
+			pass
+
+	@Slot(str, "QVariantList", int)
+	def tile(self, title: str, lines: list, count: int):
+		"""The Start tile's back (the shell reads $XDG_RUNTIME_DIR/ztos-live/<the starter's name>):
+		up to three lines and the count on its corner; nothing to show takes it away."""
+		if not count and not lines:
+			tile_clear()
+			return
+		os.makedirs(os.path.dirname(TILE), exist_ok=True)
+		text = "title=%s\n" % title.replace("\n", " ")
+		for line in lines[:3]:
+			text += "line=%s\n" % str(line).replace("\n", " ")[:60]
+		text += "count=%d\n" % count
+		with open(TILE + ".new", "w") as f:
+			f.write(text)
+		os.replace(TILE + ".new", TILE)
+
 	@Slot(result=str)
 	def voicePath(self) -> str:
 		"""Where the next voice note is recorded."""
@@ -202,6 +235,16 @@ class Td(QObject):
 	# and send it these lines, one message each (only with NULLGRAM_OPEN)
 	devSay = Property(str, lambda self: os.environ.get("NULLGRAM_SAY", ""), constant=True)
 	testPhone = Property(str, lambda self: os.environ.get("NULLGRAM_TEST_PHONE", "") if TEST else "", constant=True)
+
+
+TILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ztos-live", "uz.omonullos.nullgram")
+
+
+def tile_clear():
+	try:
+		os.remove(TILE)
+	except OSError:
+		pass
 
 
 PHOTO = dict.fromkeys([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"], "photo")
@@ -394,7 +437,36 @@ def main():
 		raise SystemExit("\n".join(e.toString() for e in view.errors()))
 	td.start()
 	view.showFullScreen()
-	sys.exit(app.exec())
+
+	# Closed by the shell (a swipe), it only hides: TDLib stays on, so new messages still notify
+	# and count on the tile. A tap on the app again (the starter sends SIGUSR1) shows it; SIGTERM
+	# (thrown off the switcher) ends it. Signals reach Qt's loop through a socket (set_wakeup_fd).
+	app.setQuitOnLastWindowClosed(False)
+	rd, wr = socket.socketpair()
+	rd.setblocking(False)
+	wr.setblocking(False)
+	signal.set_wakeup_fd(wr.fileno())
+	got = []
+	signal.signal(signal.SIGUSR1, lambda n, f: got.append(n))
+	signal.signal(signal.SIGTERM, lambda n, f: got.append(n))
+
+	def woken():
+		try:
+			rd.recv(64)
+		except OSError:
+			pass
+		while got:
+			if got.pop(0) == signal.SIGTERM:
+				app.quit()
+			else:
+				view.showFullScreen()
+				view.raise_()
+				view.requestActivate()
+	notifier = QSocketNotifier(rd.fileno(), QSocketNotifier.Read)
+	notifier.activated.connect(woken)
+	code = app.exec()
+	tile_clear()
+	sys.exit(code)
 
 
 if __name__ == "__main__":
