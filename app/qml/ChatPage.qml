@@ -1079,6 +1079,9 @@ Page {
                 readonly property bool first: edge, page.apart(messages.get(index + 1), senderKey, date)
                 readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
                 readonly property real most: width * 0.78
+                // a group's incoming messages leave room on the left for their sender's picture,
+                // which stands by the last of a run (Telegram-iOS)
+                readonly property bool faced: sender !== "" && !said       // (sender: only a group's incoming)
                 // the first message of a day has the day over it
                 readonly property bool newDay: edge, page.otherDay(messages.get(index + 1), date)
                 readonly property bool unreadBar: msgId === page.firstUnread
@@ -1148,10 +1151,34 @@ Page {
                     id: mover
                     visible: !item.said
                     width: item.width; height: item.height
+                    Loader {
+                        id: faceAt
+                        active: item.faced && item.last
+                        x: 8; y: bubble.y + bubble.height - 34
+                        width: 34; height: 34
+                        // (handed through: inside sourceComponent `item` is the Loader's)
+                        readonly property string name: item.sender
+                        readonly property string key: item.senderKey
+                        readonly property string tint: item.tint
+                        sourceComponent: Avatar {
+                            id: face
+                            letters: store.letters(faceAt.name)
+                            tint: faceAt.tint
+                            Component.onCompleted: {
+                                const s = JSON.parse(faceAt.key)
+                                if (s.user_id)
+                                    store.userPhoto(store.users[s.user_id], (path) => face.source = path)
+                                else if (store.chats[s.chat_id]) {
+                                    store.watchPhoto(store.chats[s.chat_id])
+                                    face.source = store.photoPath(store.chats[s.chat_id])
+                                }
+                            }
+                        }
+                    }
                     Item {
                         id: bubble
                         y: item.above
-                        x: item.out ? item.width - width - 8 - 6 : 8 + 6
+                        x: item.out ? item.width - width - 8 - 6 : 8 + 6 + (item.faced ? 40 : 0)
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
                         readonly property real tail: item.comments >= 0 && !item.bare ? 42 : 0     // the comments row
