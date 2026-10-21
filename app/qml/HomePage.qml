@@ -54,6 +54,20 @@ Page {
                 else
                     console.warn("nullgram: NULLGRAM_OPEN private: none read")
             }
+            else if (td.devOpen === "group") {       // the biggest group, all read (its members, for the page about it)
+                const size = (c) => {
+                    const g = home.store.groups[c.type["@type"] === "chatTypeBasicGroup" ? "b" + c.type.basic_group_id : "s" + c.type.supergroup_id]
+                    return g ? g.member_count : 0
+                }
+                const c = Array.from({ length: home.store.chatList.count }, (_, i) => home.store.chats[home.store.chatList.get(i).chatId])
+                    .filter((c) => c && c.unread_count === 0
+                        && (c.type["@type"] === "chatTypeBasicGroup" || (c.type["@type"] === "chatTypeSupergroup" && !c.type.is_channel)))
+                    .sort((a, b) => size(b) - size(a))[0]
+                if (c)
+                    home.devPush(c.id)
+                else
+                    console.warn("nullgram: NULLGRAM_OPEN group: none read")
+            }
             else if (td.devOpen !== "me") {      // an id, or a chat's name ("!" first: even unread -- our own test chats)
                 const force = td.devOpen.startsWith("!"), key = force ? td.devOpen.slice(1) : td.devOpen
                 const c = home.store.chats[key] ||

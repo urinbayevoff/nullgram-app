@@ -1,7 +1,8 @@
 // About a chat (Telegram-iOS's PeerInfoScreen): its picture, name and status, buttons for its
 // sound and a search in it, what is known of it (the number, the username, the bio; a group's or
-// a channel's description and link), then what was sent there by kind: pictures and videos in a
-// grid (a tap shows one full screen), files, links, voice notes (a tap goes back to the chat, at it).
+// a channel's description and link), then a group's members (a tap opens a chat with one) and what
+// was sent there by kind: pictures and videos in a grid (a tap shows one full screen), files, links,
+// voice notes (a tap goes back to the chat, at it).
 import QtQuick
 
 SubPage {
@@ -20,6 +21,7 @@ SubPage {
     property string photo: ""
     property real now: Date.now() / 1000
     readonly property bool saved: store.isSaved(chat)
+    readonly property bool isGroup: kind === "chatTypeBasicGroup" || (kind === "chatTypeSupergroup" && !chat.type.is_channel)
     readonly property bool muted: (changed, !!chat && chat.notification_settings.mute_for > 0)
     Connections {
         target: store
@@ -38,7 +40,8 @@ SubPage {
         if (want)
             store.send(want, (r) => { if (r["@type"] !== "error") page.full = r })
         for (const t of tabs)
-            count(t)
+            if (t.filter)
+                count(t)
         load(tabs[0])
         overlay = overlayMaker.createObject(page)
     }
@@ -65,17 +68,17 @@ SubPage {
             chatPage.goTo(id)
     }
 
-    // ---- what was sent there, by kind ----
-    readonly property var tabs: [
+    // ---- a group's members, then what was sent there by kind ----
+    readonly property var tabs: (isGroup ? [{ key: "members", name: "A'zolar" }] : []).concat([
         { key: "media", name: "Media", filter: "searchMessagesFilterPhotoAndVideo" },
         { key: "files", name: "Fayllar", filter: "searchMessagesFilterDocument" },
         { key: "links", name: "Havolalar", filter: "searchMessagesFilterUrl" },
         { key: "voice", name: "Ovozli", filter: "searchMessagesFilterVoiceNote" },
         { key: "music", name: "Musiqa", filter: "searchMessagesFilterAudio" }
-    ]
+    ])
     property var counts: ({})           // tab key -> how many
     property string tab: "media"
-    property var found: []              // the shown tab's messages, newest first
+    property var found: []              // the shown tab's messages, newest first (members: the online first)
     property bool more: false           // older ones not yet asked
     property bool loading: false
     readonly property var shownTabs: tabs.filter((t) => counts[t.key] > 0)
@@ -83,17 +86,19 @@ SubPage {
     function count(t) {
         store.send({ "@type": "getChatMessageCount", chat_id: chatId, filter: { "@type": t.filter },
                      topic_id: null, return_local: false }, (r) => {
-            if (r["@type"] !== "count")
-                return
-            const c = Object.assign({}, page.counts)
-            c[t.key] = r.count
-            page.counts = c
-            if (page.counts[page.tab] === 0) {       // the first one with something in it
-                const first = page.shownTabs[0]
-                if (first)
-                    page.load(first)
-            }
+            if (r["@type"] === "count")
+                page.counted(t.key, r.count)
         })
+    }
+    function counted(key, n) {
+        const c = Object.assign({}, counts)
+        c[key] = n
+        counts = c
+        if (counts[tab] === 0) {        // the first one with something in it
+            const first = shownTabs[0]
+            if (first)
+                load(first)
+        }
     }
     function load(t) {
         tab = t.key
@@ -106,6 +111,10 @@ SubPage {
         if (loading || !more)
             return
         loading = true
+        if (tab === "members") {
+            moreMembers()
+            return
+        }
         const t = tabs.find((x) => x.key === tab)
         const from = found.length ? found[found.length - 1].id : 0
         store.send({ "@type": "searchChatMessages", chat_id: chatId, topic_id: null, query: "", sender_id: null,
@@ -118,6 +127,55 @@ SubPage {
             const got = (r.messages || []).filter((m) => !page.found.some((f) => f.id === m.id))
             page.found = page.found.concat(got)
             page.more = got.length > 0 && !!r.next_from_message_id && page.found.length < (page.counts[t.key] || Infinity)
+        })
+    }
+
+    // a supergroup's members 200 at a time (its count comes with them), a basic group's all at once
+    function moreMembers() {
+        const basic = kind === "chatTypeBasicGroup"
+        store.send(basic ? { "@type": "getBasicGroupFullInfo", basic_group_id: chat.type.basic_group_id }
+                         : { "@type": "getSupergroupMembers", supergroup_id: chat.type.supergroup_id,
+                             filter: { "@type": "supergroupMembersFilterRecent" }, offset: found.length, limit: 200 }, (r) => {
+            if (page.tab !== "members")
+                return
+            page.loading = false
+            if (r["@type"] === "error") {       // hidden from us
+                console.warn("nullgram: members", r.code, r.message)
+                page.more = false
+                page.counted("members", 0)
+                return
+            }
+            const key = (m) => m.member_id.user_id || m.member_id.chat_id
+            const got = (r.members || []).filter((m) => !page.found.some((f) => key(f) === key(m)))
+            page.found = page.found.concat(got).sort((a, b) => page.seenRank(b) - page.seenRank(a))
+            const total = basic ? page.found.length : r.total_count
+            page.more = !basic && got.length > 0 && page.found.length < total
+            page.counted("members", total)
+        })
+    }
+    // the order Telegram lists members in: I, those online, then by when they were last here
+    function seenRank(m) {
+        const u = m.member_id["@type"] === "messageSenderUser" ? store.users[m.member_id.user_id] : null
+        if (!u)
+            return 0
+        if (store.me && u.id === store.me.id)
+            return 4e9
+        const s = u.status
+        switch (s["@type"]) {
+        case "userStatusOnline": return s.expires > now ? 3e9 : s.expires
+        case "userStatusOffline": return s.was_online
+        case "userStatusRecently": return 3
+        case "userStatusLastWeek": return 2
+        case "userStatusLastMonth": return 1
+        }
+        return 0
+    }
+    property Component chatPageMaker: null
+    function chatWith(userId) {
+        store.chatWith(userId, (id) => {
+            if (!page.chatPageMaker)
+                page.chatPageMaker = Qt.createComponent("ChatPage.qml")
+            page.nav.push(page.chatPageMaker, { chatId: id })
         })
     }
 
@@ -458,11 +516,83 @@ SubPage {
             }
         }
 
+        SettingsGroup {     // a group's members: a picture, the name, when last here, owner or admin
+            visible: page.tab === "members" && page.found.length > 0
+            Repeater {
+                id: people
+                model: page.tab === "members" ? page.found : []
+                Rectangle {
+                    id: person
+                    required property var modelData
+                    required property int index
+                    readonly property var who: modelData.member_id
+                    readonly property var u: who["@type"] === "messageSenderUser" ? store.users[who.user_id] : null
+                    readonly property bool mine: !!u && !!store.me && u.id === store.me.id
+                    readonly property string name: store.senderName(who, false) || "O'chirilgan hisob"
+                    readonly property string role: {
+                        const s = modelData.status
+                        return s["@type"] === "chatMemberStatusCreator" ? s.custom_title || "egasi"
+                             : s["@type"] === "chatMemberStatusAdministrator" ? s.custom_title || "admin" : ""
+                    }
+                    width: parent.width; height: 56
+                    color: personHit.pressed ? Theme.highlight : "transparent"
+                    property string photo: ""
+                    Component.onCompleted: {
+                        if (u)
+                            store.userPhoto(u, (p) => person.photo = p)
+                        else if (store.chats[who.chat_id] && store.chats[who.chat_id].photo)
+                            store.fetch(store.chats[who.chat_id].photo.small, 1, (p) => person.photo = p)
+                    }
+                    Avatar {
+                        x: 14; y: 8
+                        width: 40; height: 40
+                        source: person.photo
+                        letters: store.letters(person.name)
+                        tint: store.tints[Math.abs(person.who.user_id || person.who.chat_id) % store.tints.length]
+                    }
+                    Text {
+                        x: 66; y: 8
+                        width: parent.width - x - roleText.width - 24
+                        elide: Text.ElideRight
+                        horizontalAlignment: Text.AlignLeft     // (an Arabic name too, as Telegram lists it)
+                        text: person.name
+                        color: Theme.text
+                        font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        x: 66; y: 30
+                        width: parent.width - x - 14
+                        elide: Text.ElideRight
+                        text: person.mine ? "onlayn" : (store.seen, store.userStatus(person.u, page.now))
+                        color: text === "onlayn" ? Theme.accent : Theme.grey
+                        font.family: Theme.font; font.pixelSize: 14
+                    }
+                    Text {
+                        id: roleText
+                        anchors.right: parent.right; anchors.rightMargin: 14; y: 10
+                        text: person.role
+                        color: Theme.grey
+                        font.family: Theme.font; font.pixelSize: 14
+                    }
+                    Rectangle {
+                        visible: person.index < people.count - 1
+                        x: 66; anchors.bottom: parent.bottom; width: parent.width - 66; height: 0.5; color: Theme.separator
+                    }
+                    MouseArea {
+                        id: personHit
+                        anchors.fill: parent
+                        enabled: !!person.u && !person.mine
+                        onClicked: page.chatWith(person.u.id)
+                    }
+                }
+            }
+        }
+
         SettingsGroup {     // files, links, voice notes, music: a row each
-            visible: page.tab !== "media" && page.found.length > 0
+            visible: page.tab !== "media" && page.tab !== "members" && page.found.length > 0
             Repeater {
                 id: rows
-                model: page.tab !== "media" ? page.found : []
+                model: page.tab !== "media" && page.tab !== "members" ? page.found : []
                 Rectangle {
                     id: row
                     required property var modelData
