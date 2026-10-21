@@ -10,7 +10,7 @@ QtObject {
 
     readonly property color bg: dark ? "#000000" : "#ffffff"
     readonly property color bar: dark ? Qt.rgba(0.11, 0.11, 0.11, 0.92) : Qt.rgba(0.97, 0.97, 0.97, 0.92)
-    readonly property color glass: dark ? Qt.rgba(0.13, 0.13, 0.14, 0.95) : Qt.rgba(0.99, 0.99, 0.99, 0.96)     // iOS 26's glass over the chat
+    readonly property color glass: dark ? Qt.rgba(0.13, 0.13, 0.14, 1) : Qt.rgba(0.99, 0.99, 0.99, 1)     // iOS 26's glass over the chat (whole: without a blur, any see-through lets the words under it be read)
     readonly property color glassEdge: dark ? Qt.rgba(1, 1, 1, 0.12) : Qt.rgba(1, 1, 1, 0.9)
     readonly property color field: dark ? "#1c1c1d" : "#ffffff"
     readonly property color fieldBorder: dark ? "#3a3a3c" : "#d9d9de"

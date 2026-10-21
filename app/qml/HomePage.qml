@@ -24,7 +24,7 @@ Page {
         }
     }
 
-    // NULLGRAM_OPEN=<chat id>, its name, "me", "channel" or "private" (testing from the PC): that chat at once,
+    // NULLGRAM_OPEN=<chat id>, its name, "me", "channel", "private" or "russian" (testing from the PC): that chat at once,
     // unless it has unread messages (opening it would read them)
     Timer {
         running: td.devOpen !== ""
@@ -33,7 +33,14 @@ Page {
             const me = home.store.me
             if (td.devOpen === "me" && me)
                 home.store.chatWith(me.id, (id) => home.devPush(id))
-            else if (td.devOpen === "channel") {     // a channel with comments, all read
+            else if (td.devOpen === "russian") {     // a read chat whose last words are Russian (ы, щ: not Uzbek)
+                const c = Object.values(home.store.chats).find((c) => c.unread_count === 0 && c.last_message &&
+                    /[ыщ]/.test(home.store.plain(c.last_message.content) || ""))
+                if (c)
+                    home.devPush(c.id)
+                else
+                    console.warn("nullgram: NULLGRAM_OPEN russian: none read")
+            } else if (td.devOpen === "channel") {     // a channel with comments, all read
                 const c = Object.values(home.store.chats).find((c) => {
                     const g = c.type["@type"] === "chatTypeSupergroup" && c.type.is_channel ? home.store.groups["s" + c.type.supergroup_id] : null
                     return g && g.has_linked_chat && c.unread_count === 0

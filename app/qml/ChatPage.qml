@@ -61,6 +61,61 @@ Page {
         return !!st && (st["@type"] === "chatMemberStatusCreator" ||
                         (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_change_info))
     }
+    // the chat in Uzbek (the panel's "O'zbek tiliga tarjima qilish", Telegram-iOS's whole-chat translation):
+    // each message as its row is made (only what is in sight is asked for), back as it was when turned off
+    readonly property bool translatable: !!chat && !!chat.is_translatable && !thread
+    property bool translating: false
+    property var originals: ({})        // message id -> its own words, while shown translated
+    property var translations: ({})     // message id -> the Uzbek, asked once
+    function translateId(id) {
+        const i = indexOf(id)
+        if (i < 0 || !translating)
+            return
+        const done = translations[id]
+        if (done === null)
+            return
+        if (done !== undefined) {
+            if (originals[id] === undefined)
+                originals[id] = messages.get(i).text
+            messages.setProperty(i, "text", done)
+            return
+        }
+        if (!messages.get(i).text)
+            return
+        translations[id] = messages.get(i).text      // (asked: not again while it comes)
+        store.send({ "@type": "translateMessageText", chat_id: chatId, message_id: id, to_language_code: "uz" }, (r) => {
+            if (r["@type"] !== "formattedText") {
+                delete page.translations[id]
+                if (page.translating) {
+                    page.translating = false
+                    page.untranslate()
+                    page.toast("Tarjima qilib bo'lmadi" + (r.message ? ": " + r.message : ""))
+                }
+                return
+            }
+            if (!r.text.trim()) {       // (Telegram sends nothing back for what is in Uzbek already)
+                page.translations[id] = null
+                return
+            }
+            // (the translator sometimes leaves the original's markup in the words: **, </b>)
+            page.translations[id] = r.text.replace(/<\/?(b|i|u|s|code|pre)>/g, "").replace(/\*\*|__/g, "")
+            page.translateId(id)
+        })
+    }
+    function untranslate() {
+        for (const id in originals) {
+            const i = indexOf(Number(id))
+            if (i >= 0)
+                messages.setProperty(i, "text", originals[id])
+        }
+        originals = {}
+    }
+    function setTranslating(on) {
+        translating = on
+        if (!on)
+            untranslate()
+        // (on: each row in sight asks for its own, see the delegate's translated)
+    }
     function setAutoDelete(secs) {
         store.send({ "@type": "setChatMessageAutoDeleteTime", chat_id: chatId, message_auto_delete_time: secs }, (r) => {
             if (r["@type"] === "error")
@@ -131,6 +186,8 @@ Page {
     Component.onCompleted: {
         store.openChat = chatId
         loadPinned()
+        if (td.devOpen)
+            console.warn("nullgram: chat translatable", chat ? chat.is_translatable : "?", "premium", store.me ? store.me.is_premium : "?")
         store.send({ "@type": "openChat", chat_id: chatId })
         if (chat && chat.type["@type"] === "chatTypeSupergroup") {   // its update may not have the count
             const g = store.groups["s" + chat.type.supergroup_id]
@@ -943,7 +1000,11 @@ Page {
             const i = page.indexOf(id)
             if (i >= 0) {
                 const s = page.shown(content)
+                delete page.translations[id]
+                delete page.originals[id]
                 messages.setProperty(i, "text", s.text)
+                if (page.translating)
+                    page.translateId(id)
                 messages.setProperty(i, "kind", s.kind)
                 const p = page.media(content)
                 if (p.file && p.file.id !== (page.files[id] || {}).id) {
@@ -1110,7 +1171,11 @@ Page {
                 readonly property bool overlaid: media && text === "" && !reacted     // the time over the picture
                 readonly property var reactList: reacts ? JSON.parse(reacts) : []
                 readonly property bool reacted: reactList.length > 0
+                readonly property bool translated: page.translating
+                onTranslatedChanged: if (translated) page.translateId(msgId)
                 Component.onCompleted: {
+                    if (page.translating)
+                        page.translateId(msgId)
                     if ((media || rowKind === "file") && !pic)
                         page.loadPic(msgId)
                     if (auto && !path && got < 0)
@@ -1230,7 +1295,7 @@ Page {
                              : item.bare ? item.pw : item.media ? item.pw + 6
                              : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
                                                             attach.visible ? attach.width : 0, fwdText.visible ? fwdText.implicitWidth : 0,
-                                                            item.reacted ? reactRow.implicitWidth + stamp.implicitWidth + 6 : 0,
+                                                            item.reacted ? reactRow.wants + stamp.implicitWidth + 6 : 0,
                                                             stampUnder ? stamp.implicitWidth : body.last + stampRoom, tail ? 196 : 0) + 24)
                         height: tail + (item.jumbo ? body.y + body.height + 26
                               : item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
@@ -1455,12 +1520,21 @@ Page {
                             color: item.out ? Theme.outText : Theme.inText
                             font.family: Theme.font; font.pixelSize: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
                         }
-                        Row {           // the reactions: emoji and how many, ours lit; a tap puts ours on or off
-                            id: reactRow
+                        Flow {          // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
+                            id: reactRow    // More than a line holds go on to the next, the time by the last (Telegram-iOS)
                             visible: item.reacted
                             x: item.bare ? 0 : 10
                             y: body.y + body.height + (body.height ? 6 : 4)
-                            height: visible ? 28 : 0
+                            readonly property real wants: item.reactList.reduce((w, r, k) =>
+                                w + chipMetrics.advanceWidth(r.e + " " + r.n) + 16 + (k ? 4 : 0), 0)
+                            width: Math.min(wants + 1, bubble.width - x - 10)
+                            // the time by the last line, or under it when that line has no room
+                            property bool stampBelow: false
+                            onPositioningComplete: {
+                                const last = children.length > 1 ? children[children.length - 2] : null     // (the Repeater is last)
+                                stampBelow = !!last && last.x + last.width + stamp.implicitWidth + 12 > bubble.width - x - 10
+                            }
+                            height: visible ? implicitHeight + (stampBelow ? 18 : 0) : 0
                             spacing: 4
                             Repeater {
                                 model: item.reactList
@@ -1848,7 +1922,7 @@ Page {
                 id: panel
                 x: 10; y: 2
                 width: parent.width - 20
-                height: (page.askingShown ? 48 : 0) + (page.pinned ? 48 : 0)
+                height: (page.askingShown ? 48 : 0) + (page.pinned ? 48 : 0) + (page.translatable ? 48 : 0)
                 radius: 20
                 clip: true
                 Item {          // "N ta qo'shilish so'rovi": the first one's picture, a tap lists them, × hides
@@ -1894,7 +1968,54 @@ Page {
                         x: 14; anchors.bottom: parent.bottom; width: parent.width - 28; height: 0.5; color: Theme.separator
                     }
                 }
+                Item {          // "O'zbek tiliga tarjima qilish" / back to the original; ⋯: not for this chat
+                    id: transRow
+                    y: askRow.height + pinRow.height
+                    width: parent.width; height: page.translatable ? 48 : 0
+                    visible: height > 0
+                    Rectangle {
+                        visible: askRow.visible || pinRow.visible
+                        x: 14; width: parent.width - 28; height: 0.5; color: Theme.separator
+                    }
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        opacity: transHit.pressed ? 0.5 : 1
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 22; height: 22
+                            name: "translate"
+                            color: Theme.text
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: page.translating ? "Asl nusxasini ko'rsatish" : "O'zbek tiliga tarjima qilish"
+                            color: Theme.text
+                            font.family: Theme.font; font.pixelSize: 16
+                        }
+                    }
+                    MouseArea {
+                        id: transHit
+                        anchors.fill: parent; anchors.rightMargin: 52
+                        onClicked: page.setTranslating(!page.translating)
+                    }
+                    Rectangle {      // ⋯
+                        anchors.right: parent.right; anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 26; height: 26; radius: 13
+                        color: "transparent"
+                        border.color: Theme.text; border.width: 1.5
+                        opacity: moreHit.pressed ? 0.5 : 1
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 3
+                            Repeater { model: 3; Rectangle { width: 3; height: 3; radius: 1.5; color: Theme.text } }
+                        }
+                        MouseArea { id: moreHit; anchors.fill: parent; anchors.margins: -10; onClicked: transMenu.show() }
+                    }
+                }
                 Item {          // the pinned message: a tap goes to it
+                    id: pinRow
                     y: askRow.height
                     width: parent.width; height: page.pinned ? 48 : 0
                     visible: height > 0
@@ -2396,6 +2517,55 @@ Page {
                 }
             }
         }
+    }
+
+    Item {               // ⋯ of the translation row: hide it for this chat (Telegram-iOS: "Tarjima qilmaslik")
+        id: transMenu
+        z: 30
+        anchors.fill: parent
+        visible: false
+        function show() {
+            visible = true
+            transCard.scale = 0.01
+            transGrow.start()
+        }
+        MouseArea { anchors.fill: parent; onClicked: transMenu.visible = false }
+        Rectangle {
+            id: transCard
+            anchors.right: parent.right; anchors.rightMargin: 16
+            y: pinBar.y + pinBar.height
+            width: 250; height: 44
+            radius: 16
+            color: Theme.menu
+            transformOrigin: Item.TopRight
+            layer.enabled: true
+            ScaleAnimator { id: transGrow; target: transCard; from: 0.01; to: 1; duration: 420
+                            easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+            Rectangle {
+                anchors.fill: parent; radius: parent.radius
+                color: hideHit.pressed ? Theme.highlight : "transparent"
+            }
+            Text {
+                x: 16; anchors.verticalCenter: parent.verticalCenter
+                text: "Bu chatni tarjima qilmaslik"
+                color: Theme.text
+                font.family: Theme.font; font.pixelSize: 16
+            }
+            MouseArea {
+                id: hideHit
+                anchors.fill: parent
+                onClicked: {
+                    transMenu.visible = false
+                    page.setTranslating(false)
+                    store.send({ "@type": "toggleChatIsTranslatable", chat_id: page.chatId, is_translatable: false })
+                }
+            }
+        }
+    }
+
+    FontMetrics {        // a reaction's chip, measured before it is made (the bubble's width)
+        id: chipMetrics
+        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
     }
 
     MessageMenu {

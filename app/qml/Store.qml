@@ -126,6 +126,7 @@ QtObject {
             store.change(u.chat_id, { last_read_outbox_message_id: u.last_read_outbox_message_id })
             store.readOutbox(u.chat_id, u.last_read_outbox_message_id)
         },
+        updateChatIsTranslatable: (u) => store.change(u.chat_id, { is_translatable: u.is_translatable }),
         updateChatMessageAutoDeleteTime: (u) => store.change(u.chat_id, { message_auto_delete_time: u.message_auto_delete_time }),
         updateChatPendingJoinRequests: (u) => store.change(u.chat_id, { pending_join_requests: u.pending_join_requests }),
         updateChatNotificationSettings: (u) => store.change(u.chat_id, { notification_settings: u.notification_settings }),
