@@ -317,6 +317,12 @@ QtObject {
         const c = chats[chatId]
         if (!c)
             return
+        // a channel's post copied into its discussion group (sent by the channel itself): the
+        // channel tells of it, or is muted — the copy is not news, nor while the channel is open
+        const o = m.forward_info && m.forward_info.origin
+        if (o && o["@type"] === "messageOriginChannel" && m.sender_id["@type"] === "messageSenderChat"
+                && m.sender_id.chat_id === o.chat_id && chats[o.chat_id])
+            return
         const group = c.type["@type"] === "chatTypeBasicGroup" || (c.type["@type"] === "chatTypeSupergroup" && !c.type.is_channel)
         const who = group ? senderName(m.sender_id, true) : ""
         td.notify(title(c), (who ? who + ": " : "") + (full ? preview(m.content) : "Yangi xabar"))
