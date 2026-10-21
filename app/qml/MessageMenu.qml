@@ -17,7 +17,7 @@ Item {
     property real floor: height         // and the actions above this
     property bool open: false
     property Item bubble: null
-    property var actions: []            // [{ text, glyph, danger, run }]
+    property var actions: []            // [{ text, glyph, danger, gap, run }] (gap: set apart over it, as iOS's «Select»)
     property var reactions: []          // emoji the message can get, over the bubble (iOS's row)
     property var chosen: []             // the ones already ours on it
     signal reacted(string emoji)
@@ -32,6 +32,10 @@ Item {
                                    0.5667, 1.024, 0.65, 1.0199, 0.7667, 1.0141, 0.8833, 1.0032, 1, 1.0]
     readonly property real rowHeight: 46
     readonly property real boxWidth: 240
+    readonly property real gapHeight: 8
+    function boxHeight(acts) {
+        return acts.length * rowHeight + acts.filter((a) => a.gap).length * gapHeight
+    }
     property real homeX: 0              // where the bubble is in the chat
     property real homeY: 0
 
@@ -46,7 +50,7 @@ Item {
         const at = item.mapToItem(menu, 0, 0)
         homeX = at.x; homeY = at.y
         const h = item.height
-        const boxH = actions.length * rowHeight
+        const boxH = boxHeight(actions)
         const over = menu.reactions.length ? 56 : 0     // the reactions' row over the bubble
         // as low as it is, but with room for the actions under it and the reactions and the header over it
         const restY = Math.max(ceiling + 8 + over, Math.min(homeY, floor - 16 - boxH - 8 - h))
@@ -118,7 +122,7 @@ Item {
     Rectangle {
         id: box
         width: menu.boxWidth
-        height: menu.actions.length * menu.rowHeight
+        height: menu.boxHeight(menu.actions)
         radius: 20
         color: Theme.menu
         opacity: 0
@@ -132,29 +136,35 @@ Item {
                 delegate: Rectangle {
                     required property var modelData
                     required property int index
-                    width: box.width; height: menu.rowHeight
+                    readonly property real gap: modelData.gap ? menu.gapHeight : 0
+                    width: box.width; height: menu.rowHeight + gap
                     color: hit.pressed ? Theme.highlight : "transparent"
+                    Rectangle {     // the band setting it apart
+                        visible: parent.gap > 0
+                        width: parent.width; height: parent.gap
+                        color: Theme.dark ? Qt.rgba(0, 0, 0, 0.3) : Qt.rgba(0, 0, 0, 0.07)
+                    }
                     Text {          // iOS 26: the icon first, then the words
-                        width: 26; x: 14; anchors.verticalCenter: parent.verticalCenter
+                        width: 26; x: 14; y: parent.gap + (menu.rowHeight - height) / 2
                         horizontalAlignment: Text.AlignHCenter
                         text: modelData.glyph || ""
                         color: modelData.danger ? Theme.danger : Theme.text
                         font.family: Theme.font; font.pixelSize: 17
                     }
                     Text {
-                        x: 50; anchors.verticalCenter: parent.verticalCenter
+                        x: 50; y: parent.gap + (menu.rowHeight - height) / 2
                         text: modelData.text
                         color: modelData.danger ? Theme.danger : Theme.text
                         font.family: Theme.font; font.pixelSize: 16
                     }
                     Rectangle {
-                        visible: index > 0
+                        visible: index > 0 && !parent.gap
                         width: parent.width; height: 0.5
                         color: Theme.separator
                     }
                     MouseArea {
                         id: hit
-                        anchors.fill: parent
+                        anchors.fill: parent; anchors.topMargin: parent.gap
                         onClicked: {
                             const run = modelData.run
                             menu.close()

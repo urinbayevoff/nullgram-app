@@ -37,7 +37,7 @@ Page {
     }
     // a post's comments: chatId is then the channel's discussion group and this its thread there
     property var thread: 0
-    readonly property real foot: searching ? findBar.height : input.visible ? input.height : chanBar.height    // what is under the messages
+    readonly property real foot: selecting ? pickBar.height : searching ? findBar.height : input.visible ? input.height : chanBar.height    // what is under the messages
     function isMuted() {
         const n = chat ? chat.notification_settings : null
         return !!n && n.mute_for > 0
@@ -1015,6 +1015,8 @@ Page {
             acts.push({ text: "O'chirish", glyph: "✕", danger: true,
                         run: () => store.deleteMessages(page.chatId, [m.id], p.can_be_deleted_for_all_users) })
         }
+        if (!item.said && !item.sending)        // set apart at the end, as Telegram-iOS has it
+            acts.push({ text: "Tanlash", glyph: "✓", gap: true, run: () => page.startPicking(m.id) })
         if (page.kb > 0 && !waited) {   // (opened once it is down: the bubble moves down with the list)
             menuWaits = () => page.showMenu(item, m, p, reactions, true)
             menuLate.restart()
@@ -1178,6 +1180,72 @@ Page {
         })
     }
 
+    // «Tanlash» (Telegram-iOS: the menu's last, set apart): messages picked by a tap each — a circle on
+    // each one's left, «N ta tanlandi» over them, under them deleting and forwarding them all at once
+    property bool selecting: false
+    property var picked: ({})           // id → its messageProperties (null until TDLib answers)
+    readonly property var pickedIds: Object.keys(picked).map(Number).sort((a, b) => a - b)  // oldest first
+    function startPicking(id) {
+        if (page.kb > 0) {
+            field.focus = false
+            osk.hide()
+        }
+        cancelCompose()
+        picked = ({})
+        selecting = true
+        pick(id)
+    }
+    function pick(id) {
+        const p = Object.assign({}, picked)
+        if (p[id] !== undefined) {
+            delete p[id]
+            picked = p
+            return
+        }
+        p[id] = null
+        picked = p
+        store.send({ "@type": "getMessageProperties", chat_id: chatId, message_id: id }, (r) => {
+            if (!page || picked[id] === undefined)
+                return
+            const q = Object.assign({}, picked)
+            q[id] = r["@type"] === "messageProperties" ? r : {}
+            picked = q
+        })
+    }
+    function stopPicking() {
+        selecting = false
+        picked = ({})
+        deleteMenu.visible = false
+    }
+    // whether every one picked can (each one's properties known)
+    function pickedCan(what) {
+        const ids = Object.keys(picked)
+        return ids.length > 0 && ids.every((k) => picked[k] && picked[k][what])
+    }
+    readonly property bool pickedDeletable: pickedIds.length > 0 && Object.keys(picked).every((k) =>
+        picked[k] && (picked[k].can_be_deleted_only_for_self || picked[k].can_be_deleted_for_all_users))
+    function deletePicked(everyone) {
+        store.deleteMessages(chatId, pickedIds, everyone)
+        stopPicking()
+    }
+    // the picked ones' words, oldest first, a blank line between (those loaded; media without words left out)
+    readonly property string pickedText: {
+        const out = []
+        for (const id of pickedIds) {
+            const i = indexOf(id)
+            const t = i >= 0 ? messages.get(i).text : ""
+            if (t)
+                out.push(t)
+        }
+        return out.join("\n\n")
+    }
+    function forwardPicked() {
+        forwarding = pickedIds
+        copying = false
+        stopPicking()
+        forwardSheet.show()
+    }
+
     function copy(text) {
         clip.text = text
         clip.selectAll()
@@ -1207,6 +1275,14 @@ Page {
         }
         if (menu.open) {
             menu.close()
+            return true
+        }
+        if (deleteMenu.visible) {
+            deleteMenu.visible = false
+            return true
+        }
+        if (selecting) {
+            stopPicking()
             return true
         }
         if (searching) {
@@ -1354,6 +1430,11 @@ Page {
                 page.cancelCompose()
             if (page.replying && ids.indexOf(page.replying.id) >= 0)
                 page.replying = null
+            if (page.selecting && ids.some((id) => page.picked[id] !== undefined)) {
+                const p = Object.assign({}, page.picked)
+                ids.forEach((id) => delete p[id])
+                page.picked = p
+            }
         }
     }
 
@@ -1445,7 +1526,7 @@ Page {
                                          : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
                 readonly property real ph: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, aspect)
                                          : Math.max(110, Math.min(360, aspect * wide))
-                readonly property real wide: Math.min(width * 0.72, 270)
+                readonly property real wide: Math.min(width * 0.72, 270) - moved
                 readonly property bool overlaid: media && text === "" && !reacted     // the time over the picture
                 readonly property var reactList: reacts ? JSON.parse(reacts) : []
                 readonly property bool reacted: reactList.length > 0
@@ -1463,13 +1544,17 @@ Page {
                 // top) has the name and more space over it, its last (the bottom) the tail.
                 readonly property bool first: edge, page.apart(messages.get(index + 1), senderKey, date)
                 readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
-                readonly property real most: width * 0.78
+                readonly property real most: width * 0.78 - moved
                 // a group's incoming messages leave room on the left for their sender's picture,
                 // which stands by the last of a run (Telegram-iOS)
                 readonly property bool faced: sender !== "" && !said       // (sender: only a group's incoming)
                 // the first message of a day has the day over it
                 readonly property bool newDay: edge, page.otherDay(messages.get(index + 1), date)
                 readonly property bool unreadBar: msgId === page.firstUnread
+                // «Tanlash»: a circle on its left, the incoming ones moved over for it (iOS)
+                readonly property bool pickable: page.selecting && !said && !sending
+                readonly property bool isPicked: page.picked[msgId] !== undefined
+                readonly property real moved: pickable && !out ? 40 : 0       // (and narrower by as much)
                 readonly property real above: (newDay ? 38 : 0) + (unreadBar ? 36 : 0) + (first ? 8 : 2)
                 width: list.width
                 height: (said ? pill.height + 4 : bubble.height) + above
@@ -1536,6 +1621,10 @@ Page {
                     id: mover
                     visible: !item.said
                     width: item.width; height: item.height
+                    transform: Translate {
+                        x: item.moved
+                        Behavior on x { NumberAnimation { duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring } }
+                    }
                     Loader {
                         id: faceAt
                         active: item.faced && item.last
@@ -1920,6 +2009,23 @@ Page {
                         }
                     }
                 }
+                Rectangle {          // «Tanlash»: its circle, filled and ticked once picked
+                    visible: opacity > 0
+                    opacity: item.pickable ? 1 : 0
+                    x: item.pickable ? 12 : -16
+                    y: item.above + (bubble.height - height) / 2
+                    width: 26; height: 26; radius: 13
+                    color: item.isPicked ? Theme.accent : Qt.rgba(0, 0, 0, 0.12)
+                    border.color: item.isPicked ? Theme.accent : "white"; border.width: 1.5
+                    Behavior on x { NumberAnimation { duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring } }
+                    Behavior on opacity { NumberAnimation { duration: 200 } }
+                    Icon { visible: item.isPicked; anchors.centerIn: parent; width: 18; height: 18; name: "check"; color: "white" }
+                }
+                MouseArea {          // while picking a tap anywhere on its row picks it (or puts it back)
+                    anchors.fill: parent
+                    visible: item.pickable
+                    onClicked: page.pick(item.msgId)
+                }
                 XAnimator { id: flyX; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.23, 1.0, 0.32, 1.0, 1.0, 1.0] }
                 YAnimator { id: flyY; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0] }
                 // start where the text was in the field. Called before the list scrolls to this on
@@ -2021,6 +2127,7 @@ Page {
             }
             Glass {          // ‹ 24
                 id: backCap
+                visible: !page.selecting
                 x: 10; y: 8
                 width: backRow.width + 26; height: 44
                 opacity: backHit.pressed ? 0.5 : 1
@@ -2052,12 +2159,14 @@ Page {
             }
             MouseArea {          // the back button: the bar's whole height and from the edge, as iOS takes it
                 id: backHit
+                enabled: !page.selecting
                 width: backCap.x + backCap.width + 4; height: parent.height
                 onClicked: page.nav.pop()
             }
             Glass {          // the name, and under it what it is
                 id: titleCap
-                readonly property real room: bar.width - 2 * Math.max(backCap.x + backCap.width, bar.width - face.x) - 16
+                readonly property real room: bar.width - 2 * (page.selecting ? bar.width - cancelCap.x
+                                                                 : Math.max(backCap.x + backCap.width, bar.width - face.x)) - 16
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: 8
                 width: Math.min(room, Math.max(titleText.implicitWidth, subText.visible ? subText.implicitWidth : 0) + 40)
@@ -2071,7 +2180,8 @@ Page {
                         width: parent.width
                         horizontalAlignment: Text.AlignHCenter
                         elide: Text.ElideRight
-                        text: page.thread ? "Izohlar" : store.title(page.chat)
+                        text: page.selecting ? (page.pickedIds.length ? page.pickedIds.length + " ta tanlandi" : "Xabarlarni tanlang")
+                            : page.thread ? "Izohlar" : store.title(page.chat)
                         color: Theme.text
                         font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
                     }
@@ -2081,7 +2191,7 @@ Page {
                         horizontalAlignment: Text.AlignHCenter
                         elide: Text.ElideRight
                         text: page.thread ? page.threadOf : (store.seen, page.now, store.status(page.chat, page.now))     // (re-read when either changes)
-                        visible: text !== ""
+                        visible: text !== "" && !page.selecting
                         color: text === "onlayn" || text.endsWith("...") ? Theme.accent : Theme.grey
                         font.family: Theme.font; font.pixelSize: 12
                     }
@@ -2089,6 +2199,7 @@ Page {
             }
             MouseArea {          // the title, or the picture: the page about the chat (in comments: the search)
                 id: titleHit
+                enabled: !page.selecting
                 anchors.left: backHit.right; anchors.right: parent.right
                 height: parent.height
                 onClicked: {
@@ -2107,6 +2218,23 @@ Page {
                 letters: page.chat ? store.letters(page.chat.title) : ""
                 tint: store.tints[Math.abs(page.chatId) % store.tints.length]
                 saved: store.isSaved(page.chat)
+                visible: !page.selecting
+            }
+            Glass {          // picking: «Bekor» where the picture was
+                id: cancelCap
+                visible: page.selecting
+                anchors.right: parent.right; anchors.rightMargin: 10
+                y: 8
+                width: cancelPick.implicitWidth + 32; height: 44
+                opacity: cancelPickHit.pressed ? 0.6 : 1
+                Text {
+                    id: cancelPick
+                    anchors.centerIn: parent
+                    text: "Bekor"
+                    color: Theme.text
+                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
+                }
+                MouseArea { id: cancelPickHit; anchors.fill: parent; anchors.margins: -6; onClicked: page.stopPicking() }
             }
         }
 
@@ -2336,7 +2464,7 @@ Page {
         Item {               // a channel we only read: its sound on or off instead of the field, a capsule
             id: chanBar      // and a round 🔍 of glass floating over the posts (Telegram-iOS 26, owner's IMG_0092)
             z: 1
-            visible: !page.canPost && !page.searching
+            visible: !page.canPost && !page.searching && !page.selecting
             anchors.bottom: parent.bottom
             width: parent.width
             height: visible ? 60 : 0
@@ -2376,10 +2504,57 @@ Page {
             }
         }
 
+        Item {               // picking: what goes for all of them — deleted (🗑, left), their words copied
+            id: pickBar      // (the middle), forwarded (right); each a piece of glass as the field's
+            z: 1
+            visible: page.selecting
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: visible ? 60 : 0
+            Glass {
+                x: 10; anchors.verticalCenter: parent.verticalCenter
+                width: 44; height: 44
+                opacity: !page.pickedDeletable ? 0.4 : trashHit.pressed ? 0.7 : 1
+                Icon { anchors.centerIn: parent; name: "trash"; color: Theme.danger }
+                MouseArea { id: trashHit; anchors.fill: parent; enabled: page.pickedDeletable; onClicked: deleteMenu.show() }
+            }
+            Glass {
+                anchors.centerIn: parent
+                visible: page.pickedText !== ""
+                width: copyPickText.implicitWidth + 44; height: 44
+                opacity: copyPickHit.pressed ? 0.7 : 1
+                Text {
+                    id: copyPickText
+                    anchors.centerIn: parent
+                    text: "Nusxalash"
+                    color: Theme.text
+                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
+                }
+                MouseArea {
+                    id: copyPickHit
+                    anchors.fill: parent
+                    onClicked: {
+                        page.copy(page.pickedText)
+                        page.toast(page.pickedIds.length > 1 ? page.pickedIds.length + " ta xabar nusxalandi" : "Nusxalandi")
+                        page.stopPicking()
+                    }
+                }
+            }
+            Glass {
+                anchors.right: parent.right; anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                width: 44; height: 44
+                readonly property bool can: page.pickedCan("can_be_forwarded")
+                opacity: !can ? 0.4 : fwdPickHit.pressed ? 0.7 : 1
+                Icon { anchors.centerIn: parent; name: "forward"; color: Theme.text }
+                MouseArea { id: fwdPickHit; anchors.fill: parent; enabled: parent.can; onClicked: page.forwardPicked() }
+            }
+        }
+
         Item {               // the field, with what it answers or edits over it: Telegram-iOS 26's glass
             id: input        // floating over the chat — 📎, the field, the mic, each its own piece
             z: 1
-            visible: page.canPost && !page.searching
+            visible: page.canPost && !page.searching && !page.selecting
             anchors.bottom: parent.bottom
             transform: Translate { y: -page.kb }
             width: parent.width
@@ -2922,6 +3097,72 @@ Page {
                                 timerMenu.visible = false
                                 if (parent.modelData !== page.autoDelete)
                                     page.setAutoDelete(parent.modelData)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Item {               // the picked ones deleted: for us, or for everyone too (as the ⏱'s choices)
+        id: deleteMenu
+        z: 30
+        anchors.fill: parent
+        visible: false
+        // what TDLib lets with all of them: both, or only one of the two
+        readonly property var choices: {
+            const all = page.pickedCan("can_be_deleted_for_all_users"), self = page.pickedCan("can_be_deleted_only_for_self")
+            return all && self ? [{ t: "Hamma uchun o'chirish", everyone: true }, { t: "Men uchun o'chirish", everyone: false }]
+                 : all ? [{ t: "O'chirish", everyone: true }] : [{ t: "Men uchun o'chirish", everyone: false }]
+        }
+        function show() {
+            visible = true
+            delCard.scale = 0.01
+            delGrow.start()
+        }
+        MouseArea { anchors.fill: parent; onClicked: deleteMenu.visible = false }
+        Rectangle {
+            id: delCard
+            x: 10
+            anchors.bottom: parent.bottom; anchors.bottomMargin: page.foot + 8
+            width: 250; height: delChoices.height
+            radius: 16
+            color: Theme.menu
+            transformOrigin: Item.BottomLeft
+            layer.enabled: true
+            ScaleAnimator { id: delGrow; target: delCard; from: 0.01; to: 1; duration: 420
+                            easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring }
+            Column {
+                id: delChoices
+                width: parent.width
+                Text {
+                    x: 16; width: parent.width - 32
+                    topPadding: 10; bottomPadding: 6
+                    wrapMode: Text.Wrap
+                    text: page.pickedIds.length > 1 ? page.pickedIds.length + " ta xabar o'chirilsinmi?" : "Xabar o'chirilsinmi?"
+                    color: Theme.grey
+                    font.family: Theme.font; font.pixelSize: 13
+                }
+                Repeater {
+                    model: deleteMenu.choices
+                    Rectangle {
+                        required property var modelData
+                        width: delChoices.width; height: 44
+                        color: delHit.pressed ? Theme.highlight : "transparent"
+                        Rectangle { width: parent.width; height: 0.5; color: Theme.separator }
+                        Text {
+                            x: 16; anchors.verticalCenter: parent.verticalCenter
+                            text: parent.modelData.t
+                            color: Theme.danger
+                            font.family: Theme.font; font.pixelSize: 16
+                        }
+                        MouseArea {
+                            id: delHit
+                            anchors.fill: parent
+                            onClicked: {
+                                deleteMenu.visible = false
+                                page.deletePicked(parent.modelData.everyone)
                             }
                         }
                     }
