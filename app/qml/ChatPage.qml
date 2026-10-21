@@ -1055,8 +1055,10 @@ Page {
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
                 readonly property bool media: picKind !== ""
                 readonly property bool bare: picKind === "sticker" || picKind === "round" || jumbo > 0
-                // on the screen (or nearly): only then a GIF plays
+                // nearly on the screen: a GIF's player is made ready; on it: only then it plays (one
+                // playing just off the screen kept the whole window redrawn at the video's 30 fps)
                 readonly property bool inSight: y + height > list.contentY - 200 && y < list.contentY + list.height + 200
+                readonly property bool onScreen: y + height > list.contentY && y < list.contentY + list.height
                 readonly property real aspect: picH / picW
                 readonly property real pw: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
                                          : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
@@ -1284,12 +1286,16 @@ Page {
                                 id: moving
                                 anchors.fill: parent
                                 readonly property bool round: item.picKind === "round"
-                                active: item.path !== "" && page.visible && !viewer.open && item.inSight &&
+                                active: item.path !== "" && page.visible && item.inSight &&
                                         ((Prefs.autoGif && (item.picKind === "gif" || item.anim)) || (round && page.roundId === item.msgId))
                                 // (handed through here: inside sourceComponent `item` is not the delegate)
                                 readonly property string file: item.path
+                                // paused, not taken apart, under the gallery: made anew all at once as it
+                                // closed they held up the frames of its flight back
+                                readonly property bool playing: !viewer.open && (round || item.onScreen)
                                 sourceComponent: InlineVideo {
                                     path: moving.file
+                                    running: moving.playing
                                     radius: Number(picture.corner)
                                     sound: moving.round
                                     loop: !moving.round

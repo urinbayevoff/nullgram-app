@@ -479,6 +479,10 @@ class Wall(QQuickImageProvider):
 
 
 def main():
+	# Animations by the clock, not a vsync's 16.7 ms a frame: while a video plays the frames come
+	# every 33 ms, and Qt's default driver then played every animation at half speed (the
+	# gallery's black took 1.5 s to go instead of 0.25 s)
+	os.environ.setdefault("QSG_USE_SIMPLE_ANIMATION_DRIVER", "1")
 	app = QGuiApplication(sys.argv)
 	app.setOrganizationName("OmonullOS")
 	app.setApplicationName("Nullgram")
@@ -500,6 +504,21 @@ def main():
 		raise SystemExit("\n".join(e.toString() for e in view.errors()))
 	td.start()
 	view.showFullScreen()
+
+	# NULLGRAM_FPS=1: each frame the UI thread was late for (over 25 ms) to the log; =<ms>: each
+	# frame over that (=0: every frame)
+	if os.environ.get("NULLGRAM_FPS"):
+		import time
+		last = [time.monotonic()]
+		over = float(os.environ["NULLGRAM_FPS"])
+		over = 0.025 if over == 1 else over / 1000
+
+		def stepped():
+			now = time.monotonic()
+			if now - last[0] > over:
+				print("nullgram: frame %.0f ms at %.3f" % ((now - last[0]) * 1000, now), flush=True)
+			last[0] = now
+		view.afterAnimating.connect(stepped)
 
 	# Closed by the shell (a swipe), it only hides: TDLib stays on, so new messages still notify
 	# and count on the tile. A tap on the app again (the starter sends SIGUSR1) shows it; SIGTERM
