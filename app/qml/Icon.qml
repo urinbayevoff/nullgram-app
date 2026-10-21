@@ -1,6 +1,6 @@
 // Our own line-art icons, drawn as paths on a 24-point grid (no icon font: the
 // emoji ones come in colour and in another style): person, chats, settings, search, and the
-// media ones (play, pause, down, cross, mic, clip). Those in `lines` are strokes, not fills.
+// media ones (play, pause, down, cross, mic, clip, expand). Those in `lines` are strokes, not fills.
 import QtQuick
 import QtQuick.Shapes
 
@@ -51,6 +51,7 @@ Item {
         mic: "M12 2.8a3.4 3.4 0 0 1 3.4 3.4v5.6a3.4 3.4 0 0 1-6.8 0V6.2A3.4 3.4 0 0 1 12 2.8Z M5.6 11h1.8a4.6 4.6 0 0 0 9.2 0h1.8a6.4 6.4 0 0 1-5.5 6.3v2.9h-1.8v-2.9A6.4 6.4 0 0 1 5.6 11Z"
     })
     readonly property var lines: ({
+        expand: "M4.5 9.5v-5h5 M14.5 4.5h5v5 M19.5 14.5v5h-5 M9.5 19.5h-5v-5",
         clip: "M17.2 8.6l-6.9 6.9a1.9 1.9 0 0 1-2.7-2.7l7.4-7.4a3.4 3.4 0 0 1 4.8 4.8l-7.8 7.8a4.9 4.9 0 0 1-6.9-6.9l7.2-7.2"
     })
 
