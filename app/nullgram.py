@@ -426,9 +426,27 @@ class Round(QQuickImageProvider):
 		return out
 
 
+def _corners(w, h, rs):
+	"""A w×h rectangle whose corners (top left, top right, bottom right, bottom left) are rounded each by its own."""
+	tl, tr, br, bl = rs
+	path = QPainterPath()
+	path.moveTo(tl, 0)
+	path.lineTo(w - tr, 0)
+	path.arcTo(QRectF(w - 2 * tr, 0, 2 * tr, 2 * tr), 90, -90)
+	path.lineTo(w, h - br)
+	path.arcTo(QRectF(w - 2 * br, h - 2 * br, 2 * br, 2 * br), 0, -90)
+	path.lineTo(bl, h)
+	path.arcTo(QRectF(0, h - 2 * bl, 2 * bl, 2 * bl), 270, -90)
+	path.lineTo(0, tl)
+	path.arcTo(QRectF(0, 0, 2 * tl, 2 * tl), 180, -90)
+	path.closeSubpath()
+	return path
+
+
 class Pic(QQuickImageProvider):
 	"""image://pic/<radius>/<width>/<path> (or .../mini/<base64>): a message's picture at the size
-	asked, cut to the middle, its corners rounded (radius 0: none; -1: a circle). `width` is the
+	asked, cut to the middle, its corners rounded (radius 0: none; -1: a circle; "14,4,4,14": each
+	corner its own, from the top left round, as an album's pictures have them). `width` is the
 	item's in points, so the radius scales with the pixels asked. `mini` is Telegram's tiny blurred
 	preview, there before the picture is. On Qt's image-loading threads."""
 
@@ -450,10 +468,13 @@ class Pic(QQuickImageProvider):
 		if src.isNull():
 			return out
 		k = w / max(float(width), 1.0)
-		r = float(radius)
+		rs = [float(x) for x in radius.split(",")]
+		r = rs[0]
 		p = QPainter(out)
 		p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-		if r:
+		if len(rs) == 4:
+			p.setClipPath(_corners(w, h, [min(x * k, w / 2, h / 2) for x in rs]))
+		elif r:
 			clip = QPainterPath()
 			if r < 0:
 				clip.addEllipse(QRectF(0, 0, w, h))

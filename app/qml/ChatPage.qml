@@ -7,6 +7,7 @@
 import QtQuick
 import QtQuick.Window
 import QtMultimedia
+import "Mosaic.js" as Mosaic
 
 Page {
     id: page
@@ -648,7 +649,116 @@ Page {
             jumbo: words !== null && !r && !m.forward_info ? store.emojiCount(words.trim()) : 0,
             fwd: root ? "" : store.origin(m.forward_info),
             reacts: JSON.stringify(store.reactions(m.interaction_info)),
-            isPinned: !!m.is_pinned
+            isPinned: !!m.is_pinned,
+            // pictures sent together (one media_album_id): one bubble, a mosaic (only photos and videos)
+            album: m.media_album_id && m.media_album_id !== "0" && (p.picKind === "photo" || p.picKind === "video")
+                   ? String(m.media_album_id) : ""
+        }
+    }
+
+    // Albums (Telegram-iOS's grouped messages): each message stays a row of its own (its file, its
+    // updates, deleting it), the album's main one — its caption's, else the oldest — draws them all
+    // as a mosaic, the others (`tucked`) take no room. Worked out again as rows come, go or change.
+    property var albums: ({})           // album -> { ids (oldest first), main, talk (comments), talkId }
+    property string albumKey: ""
+    property int albumRev: 0            // the albums' make-up changed (their mosaics are laid out again)
+    property int albumTick: 0           // a member's row changed (its picture came, its file moves on)
+    function regroup() {
+        const g = {}
+        for (let i = 0; i < messages.count; i++) {
+            const r = messages.get(i)
+            if (!r.album)
+                continue
+            const a = g[r.album] || (g[r.album] = { ids: [], main: 0, words: 0, talk: -1, talkId: 0 })
+            a.ids.push(r.msgId)
+            if (r.text && !a.words)
+                a.words = r.msgId
+            if (r.comments > a.talk) {
+                a.talk = r.comments
+                a.talkId = r.msgId
+            }
+        }
+        for (const k in g) {
+            g[k].ids.sort((a, b) => a - b)
+            g[k].main = g[k].words || g[k].ids[0]
+        }
+        const key = JSON.stringify(g)
+        if (key === albumKey)
+            return false
+        albumKey = key
+        albums = g
+        albumRev++
+        if (list.down || scroll.running)
+            Qt.callLater(page.keepDown)
+        return true
+    }
+    // an album's next message came as the list went down to its first: its bubble is another
+    // height now (a mosaic), the newest stays at the bottom
+    function keepDown() {
+        if (!list.down && !scroll.running)
+            return
+        const was = list.contentY
+        list.forceLayout()
+        list.positionViewAtBeginning()
+        if (scroll.running) {
+            scroll.to = list.contentY
+            list.contentY = was
+            scroll.restart()
+        }
+    }
+    // the row past the album `index` is in, `step` 1 the older side, -1 the newer
+    function beyond(index, step, album) {
+        let k = index + step
+        while (k >= 0 && k < messages.count && messages.get(k).album === album)
+            k += step
+        return k >= 0 && k < messages.count ? messages.get(k) : undefined
+    }
+    // a member's media, copied out of its row (a new object: what binds to it is told)
+    function cellOf(id) {
+        const i = indexOf(id)
+        if (i < 0)
+            return null
+        const r = messages.get(i)
+        return { picKind: r.picKind, picW: r.picW, picH: r.picH, mini: r.mini, pic: r.pic, dur: r.dur,
+                 got: r.got, path: r.path, fileSize: r.fileSize, sending: r.sending }
+    }
+    // the mosaic `wide` across: { width, height, items: [{ id, x, y, w, h, corner }] }
+    function tilesOf(g, wide) {
+        const cells = g.ids.map((id) => ({ id: id, c: cellOf(id) })).filter((x) => x.c)
+        const lay = Mosaic.layout(cells.map((x) => ({ w: x.c.picW, h: x.c.picH })), Math.floor(wide), 64, 2)
+        const round = (it, a, b) => it.sides.indexOf(a) >= 0 && it.sides.indexOf(b) >= 0 ? 14 : 3
+        lay.items.forEach((it, k) => {
+            it.id = cells[k].id
+            it.corner = [round(it, "t", "l"), round(it, "t", "r"), round(it, "b", "r"), round(it, "b", "l")].join(",")
+        })
+        return lay
+    }
+    // what shows message `id`'s picture: its tile when it is in an album's mosaic, else its row
+    function shownAt(id) {
+        const i = indexOf(id)
+        if (i < 0)
+            return null
+        const r = messages.get(i)
+        const g = r.album ? albums[r.album] : null
+        if (g && g.ids.length > 1) {
+            const k = indexOf(g.main)
+            const it = k >= 0 ? list.itemAtIndex(k) : null
+            return it ? it.tileOf(id) : null
+        }
+        return list.itemAtIndex(i)
+    }
+    Connections {
+        target: messages
+        function onRowsInserted() { page.regroup() }
+        function onRowsRemoved() { page.regroup() }
+        function onModelReset() { page.regroup() }
+        function onDataChanged(from, to) {
+            for (let i = from.row; i <= to.row; i++)
+                if (messages.get(i).album) {
+                    page.regroup()
+                    page.albumTick++
+                    return
+                }
         }
     }
 
@@ -986,7 +1096,8 @@ Page {
             osk.hide()
         }
         const m = { id: item.msgId, text: item.text, kind: item.kind, out: item.out,
-                    name: item.out ? "Siz" : item.sender || (chat ? chat.title : "") }
+                    name: item.out ? "Siz" : item.sender || (chat ? chat.title : ""),
+                    ids: item.grouped ? item.group.ids : [item.msgId] }     // (an album: all of it)
         // its properties and the reactions it can get, both asked at once; the menu opens with both
         let props = null, reactions = null
         const both = () => { if (props && reactions) page.showMenu(item, m, props, reactions) }
@@ -1018,9 +1129,9 @@ Page {
         if (ok && p.can_get_link)
             acts.push({ text: "Havolani nusxalash", glyph: "🔗", run: () => page.copyLink(m.id) })
         if (ok && p.can_be_forwarded)
-            acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = false; forwardSheet.show() } })
+            acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = m.ids; page.copying = false; forwardSheet.show() } })
         if (ok && p.can_be_copied && page.channel)   // (Telegram-iOS's "forward without the author's name")
-            acts.push({ text: "Imzosiz forward qilish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = true; forwardSheet.show() } })
+            acts.push({ text: "Imzosiz forward qilish", glyph: "↪", run: () => { page.forwarding = m.ids; page.copying = true; forwardSheet.show() } })
         if (ok && p.can_be_pinned)
             acts.push({ text: item.isPinned ? "Qadashni olish" : "Qadash", glyph: "📌",
                         run: () => store.pin(page.chatId, m.id, !item.isPinned) })
@@ -1031,15 +1142,15 @@ Page {
             acts.push({ text: "Shikoyat qilish", glyph: "ⓘ", run: () => page.report([m.id], "", "") })
         if (ok && p.can_be_deleted_only_for_self && p.can_be_deleted_for_all_users) {
             acts.push({ text: "Men uchun o'chirish", glyph: "✕", danger: true,
-                        run: () => store.deleteMessages(page.chatId, [m.id], false) })
+                        run: () => store.deleteMessages(page.chatId, m.ids, false) })
             acts.push({ text: "Hamma uchun o'chirish", glyph: "✕", danger: true,
-                        run: () => store.deleteMessages(page.chatId, [m.id], true) })
+                        run: () => store.deleteMessages(page.chatId, m.ids, true) })
         } else if (ok && (p.can_be_deleted_only_for_self || p.can_be_deleted_for_all_users)) {
             acts.push({ text: "O'chirish", glyph: "✕", danger: true,
-                        run: () => store.deleteMessages(page.chatId, [m.id], p.can_be_deleted_for_all_users) })
+                        run: () => store.deleteMessages(page.chatId, m.ids, p.can_be_deleted_for_all_users) })
         }
         if (!item.said && !item.sending)        // set apart at the end, as Telegram-iOS has it
-            acts.push({ text: "Tanlash", glyph: "✓", gap: true, run: () => page.startPicking(m.id) })
+            acts.push({ text: "Tanlash", glyph: "✓", gap: true, run: () => page.startPicking(m.ids) })
         if (page.kb > 0 && !waited) {   // (opened once it is down: the bubble moves down with the list)
             menuWaits = () => page.showMenu(item, m, p, reactions, true)
             menuLate.restart()
@@ -1208,7 +1319,7 @@ Page {
     property bool selecting: false
     property var picked: ({})           // id → its messageProperties (null until TDLib answers)
     readonly property var pickedIds: Object.keys(picked).map(Number).sort((a, b) => a - b)  // oldest first
-    function startPicking(id) {
+    function startPicking(ids) {
         if (page.kb > 0) {
             field.focus = false
             osk.hide()
@@ -1216,24 +1327,26 @@ Page {
         cancelCompose()
         picked = ({})
         selecting = true
-        pick(id)
+        pick(ids)
     }
-    function pick(id) {
+    // these (one message, or an album's all) picked, or put back when they all were
+    function pick(ids) {
         const p = Object.assign({}, picked)
-        if (p[id] !== undefined) {
-            delete p[id]
+        if (ids.every((id) => p[id] !== undefined)) {
+            ids.forEach((id) => delete p[id])
             picked = p
             return
         }
-        p[id] = null
+        ids.forEach((id) => p[id] = null)
         picked = p
-        store.send({ "@type": "getMessageProperties", chat_id: chatId, message_id: id }, (r) => {
-            if (!page || picked[id] === undefined)
-                return
-            const q = Object.assign({}, picked)
-            q[id] = r["@type"] === "messageProperties" ? r : {}
-            picked = q
-        })
+        for (const id of ids)
+            store.send({ "@type": "getMessageProperties", chat_id: chatId, message_id: id }, (r) => {
+                if (!page || picked[id] === undefined)
+                    return
+                const q = Object.assign({}, picked)
+                q[id] = r["@type"] === "messageProperties" ? r : {}
+                picked = q
+            })
     }
     function stopPicking() {
         selecting = false
@@ -1333,7 +1446,7 @@ Page {
                     return
             const from = m.is_outgoing && page.flying &&     // (one emoji alone comes back as messageAnimatedEmoji)
                          store.plain(m.content) === page.flying.text ? page.flying : null
-            const bottom = list.atYBeginning || from
+            const bottom = list.atYBeginning || scroll.running || from
             const was = list.contentY
             page.remember(m)
             messages.insert(0, page.row(m))
@@ -1430,7 +1543,7 @@ Page {
                     messages.setProperty(i, "path", f.local.path)
                 if (done && page.wantOpen === id) {
                     page.wantOpen = 0
-                    const it = list.itemAtIndex(i)
+                    const it = page.shownAt(id)
                     if (it)
                         page.openMedia(it)
                 }
@@ -1535,6 +1648,22 @@ Page {
                 required property int comments      // a channel post's comments (-1: none)
                 required property int replies       // a group message's answers
                 required property string said       // a service message: its words, in a pill in the middle
+                required property string album      // pictures sent together: their media_album_id
+                // an album: its main one shows them all (a mosaic), the others are tucked away under it
+                readonly property var group: album !== "" ? (page.albumRev, page.albums[album] || null) : null
+                readonly property bool grouped: group !== null && group.ids.length > 1
+                readonly property bool tucked: grouped && group.main !== msgId
+                readonly property bool mosaic: grouped && group.main === msgId
+                readonly property var tiles: mosaic ? page.tilesOf(group, wide) : null
+                readonly property var ids: grouped ? group.ids : [msgId]
+                function tileOf(id) {
+                    for (let k = 0; k < tileRep.count; k++)
+                        if (tileRep.itemAt(k) && tileRep.itemAt(k).msgId === id)
+                            return tileRep.itemAt(k)
+                    return null
+                }
+                readonly property int talk: mosaic ? group.talk : comments          // the comments, an album's on one of them
+                readonly property var talkId: mosaic ? group.talkId : msgId
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -1545,9 +1674,9 @@ Page {
                 readonly property bool inSight: y + height > list.contentY - 200 && y < list.contentY + list.height + 200
                 readonly property bool onScreen: y + height > list.contentY && y < list.contentY + list.height
                 readonly property real aspect: picH / picW
-                readonly property real pw: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
+                readonly property real pw: mosaic ? tiles.width : picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
                                          : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
-                readonly property real ph: picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, aspect)
+                readonly property real ph: mosaic ? tiles.height : picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, aspect)
                                          : Math.max(110, Math.min(360, aspect * wide))
                 readonly property real wide: Math.min(width * 0.72, 270) - moved
                 readonly property bool overlaid: media && text === "" && !reacted     // the time over the picture
@@ -1565,22 +1694,26 @@ Page {
                 }
                 // a run: one sender's messages within 10 minutes of each other. Its first (the
                 // top) has the name and more space over it, its last (the bottom) the tail.
-                readonly property bool first: edge, page.apart(messages.get(index + 1), senderKey, date)
-                readonly property bool last: page.apart(messages.get(index - 1), senderKey, date)
+                readonly property bool first: edge, grouped ? page.apart(page.beyond(index, 1, album), senderKey, date)
+                                                     : page.apart(messages.get(index + 1), senderKey, date)
+                readonly property bool last: grouped ? page.apart(page.beyond(index, -1, album), senderKey, date)
+                                             : page.apart(messages.get(index - 1), senderKey, date)
                 readonly property real most: width * 0.78 - moved
                 // a group's incoming messages leave room on the left for their sender's picture,
                 // which stands by the last of a run (Telegram-iOS)
                 readonly property bool faced: sender !== "" && !said       // (sender: only a group's incoming)
                 // the first message of a day has the day over it
-                readonly property bool newDay: edge, page.otherDay(messages.get(index + 1), date)
-                readonly property bool unreadBar: msgId === page.firstUnread
+                readonly property bool newDay: edge, grouped ? page.otherDay(page.beyond(index, 1, album), date)
+                                                      : page.otherDay(messages.get(index + 1), date)
+                readonly property bool unreadBar: msgId === page.firstUnread || (grouped && ids.indexOf(page.firstUnread) >= 0)
                 // «Tanlash»: a circle on its left, the incoming ones moved over for it (iOS)
                 readonly property bool pickable: page.selecting && !said && !sending
-                readonly property bool isPicked: page.picked[msgId] !== undefined
+                readonly property bool isPicked: ids.every((id) => page.picked[id] !== undefined)
                 readonly property real moved: pickable && !out ? 40 : 0       // (and narrower by as much)
                 readonly property real above: (newDay ? 38 : 0) + (unreadBar ? 36 : 0) + (first ? 8 : 2)
                 width: list.width
-                height: (said ? pill.height + 4 : bubble.height) + above
+                height: tucked ? 0 : (said ? pill.height + 4 : bubble.height) + above
+                visible: !tucked
 
                 Rectangle {
                     visible: item.newDay
@@ -1600,7 +1733,7 @@ Page {
                     y: item.above - 2
                     width: parent.width; height: parent.height - y + 2
                     color: Theme.accent
-                    opacity: item.msgId === page.flashId ? 0.18 : 0
+                    opacity: item.ids.indexOf(page.flashId) >= 0 ? 0.18 : 0
                     Behavior on opacity { NumberAnimation { duration: 500 } }
                 }
                 Rectangle {          // Telegram-iOS's unread bar, over the first unread message
@@ -1678,7 +1811,7 @@ Page {
                         x: item.out ? item.width - width - 8 - 6 : 8 + 6 + (item.faced ? 40 : 0)
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
-                        readonly property real tail: item.comments >= 0 && !item.bare ? 42 : 0     // the comments row
+                        readonly property real tail: item.talk >= 0 && !item.bare ? 42 : 0     // the comments row
 
                         readonly property bool stampUnder: !item.overlaid && body.last + stampRoom > (item.media ? width : item.most) - 24
                         width: item.jumbo ? Math.max(body.implicitWidth, stamp.implicitWidth + 12) + 8
@@ -1720,7 +1853,16 @@ Page {
                             onReleased: { sink.stop(); rise.restart() }
                             onCanceled: { sink.stop(); rise.restart() }
                             onPressAndHold: page.openMenu(item)
-                            onClicked: if (item.media || item.rowKind) page.tapMedia(item)
+                            onClicked: (mouse) => {
+                                if (item.mosaic) {          // the album's picture under the finger
+                                    const at = hold.mapToItem(tilesView, mouse.x, mouse.y)
+                                    const t = tilesView.childAt(at.x, at.y)
+                                    if (t && t.msgId)
+                                        page.tapMedia(t)
+                                } else if (item.media || item.rowKind) {
+                                    page.tapMedia(item)
+                                }
+                            }
                         }
                         ScaleAnimator { id: sink; target: bubble; to: 0.96; duration: 350; easing.type: Easing.OutQuad }
                         ScaleAnimator { id: rise; target: bubble; to: 1; duration: 150; easing.type: Easing.OutQuad }
@@ -1788,9 +1930,26 @@ Page {
                             y: item.bare ? 0 : quote.visible ? quote.y + quote.height + 4 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 3
                             width: item.pw; height: visible ? item.ph : 0
                             readonly property string corner: item.picKind === "round" ? "-1" : item.bare ? "0" : "14"
+                            Item {      // an album's: each its own picture
+                                id: tilesView
+                                visible: item.mosaic
+                                anchors.fill: parent
+                                Repeater {
+                                    id: tileRep
+                                    model: item.mosaic ? item.tiles.items : []
+                                    AlbumTile {
+                                        required property var modelData
+                                        x: modelData.x; y: modelData.y; width: modelData.w; height: modelData.h
+                                        msgId: modelData.id
+                                        corner: modelData.corner
+                                        cell: page.albumTick, page.albumRev, page.cellOf(modelData.id)
+                                        Component.onCompleted: if (!pic) page.loadPic(msgId)
+                                    }
+                                }
+                            }
                             Image {
                                 anchors.fill: parent
-                                visible: item.mini !== "" && full.status !== Image.Ready
+                                visible: item.mini !== "" && full.status !== Image.Ready && !item.mosaic
                                 asynchronous: true
                                 // (in points: Qt asks the provider for these times the pixel ratio)
                                 sourceSize: Qt.size(12, 12 * item.ph / item.pw)     // blurred: small is enough
@@ -1802,7 +1961,7 @@ Page {
                                 anchors.fill: parent
                                 asynchronous: true
                                 sourceSize: Qt.size(Math.round(item.pw), Math.round(item.ph))
-                                source: item.pic ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/" + item.pic : ""
+                                source: item.pic && !item.mosaic ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/" + item.pic : ""
                                 opacity: status === Image.Ready ? 1 : 0
                                 Behavior on opacity { OpacityAnimator { duration: 150 } }
                             }
@@ -1810,7 +1969,7 @@ Page {
                                 id: moving
                                 anchors.fill: parent
                                 readonly property bool round: item.picKind === "round"
-                                active: item.path !== "" && page.visible && item.inSight &&
+                                active: item.path !== "" && page.visible && item.inSight && !item.mosaic &&
                                         ((Prefs.autoGif && (item.picKind === "gif" || item.anim)) || (round && page.roundId === item.msgId))
                                 // (handed through here: inside sourceComponent `item` is not the delegate)
                                 readonly property string file: item.path
@@ -1827,7 +1986,7 @@ Page {
                                 }
                             }
                             Rectangle {     // a video: play over it (the ring while it comes); a GIF: the ring
-                                visible: item.got >= 0 || (item.picKind === "video" || (item.picKind === "gif" && !item.path)
+                                visible: !item.mosaic && (item.got >= 0 || item.picKind === "video" || (item.picKind === "gif" && !item.path)
                                                             || (item.picKind === "round" && page.roundId !== item.msgId))
                                 anchors.centerIn: parent
                                 width: 48; height: 48; radius: 24
@@ -1847,7 +2006,7 @@ Page {
                                 }
                             }
                             Rectangle {
-                                visible: item.picKind === "video" || item.picKind === "gif" || item.picKind === "round"
+                                visible: !item.mosaic && (item.picKind === "video" || item.picKind === "gif" || item.picKind === "round")
                                 x: 6; y: item.picKind === "round" ? parent.height - 26 : 6
                                 width: len.implicitWidth + 12; height: 20; radius: 10
                                 color: Qt.rgba(0, 0, 0, 0.45)
@@ -1911,7 +2070,7 @@ Page {
                             onLink: (url) => page.follow(url, item.msgId)
                             onTouched: (down) => { if (down) { rise.stop(); sink.restart() } else { sink.stop(); rise.restart() } }
                             onHeld: page.openMenu(item)
-                            onTapped: if (item.media || item.rowKind) page.tapMedia(item)
+                            onTapped: if (!item.mosaic && (item.media || item.rowKind)) page.tapMedia(item)
                             onFold: page.unfold(item.msgId)
                         }
                         Flow {          // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
@@ -2006,7 +2165,7 @@ Page {
                             }
                             Text {
                                 x: 40; anchors.verticalCenter: parent.verticalCenter
-                                text: item.comments > 0 ? item.comments + " ta izoh" : "Izoh qoldirish"
+                                text: item.talk > 0 ? item.talk + " ta izoh" : "Izoh qoldirish"
                                 color: Theme.accent
                                 font.family: Theme.font; font.pixelSize: 15
                             }
@@ -2016,7 +2175,7 @@ Page {
                                 color: Theme.accent
                                 font.family: Theme.font; font.pixelSize: 22
                             }
-                            MouseArea { anchors.fill: parent; onClicked: page.openComments(item.msgId) }
+                            MouseArea { anchors.fill: parent; onClicked: page.openComments(item.talkId) }
                         }
                     }
                     Rectangle {         // beside a channel's post: send it on (as Telegram has it)
@@ -2028,7 +2187,7 @@ Page {
                         Icon { anchors.centerIn: parent; name: "forward"; color: "white"; scale: 0.72 }
                         MouseArea {
                             anchors.fill: parent; anchors.margins: -6
-                            onClicked: { page.forwarding = [item.msgId]; forwardSheet.show() }
+                            onClicked: { page.forwarding = item.ids; forwardSheet.show() }
                         }
                     }
                 }
@@ -2047,7 +2206,7 @@ Page {
                 MouseArea {          // while picking a tap anywhere on its row picks it (or puts it back)
                     anchors.fill: parent
                     visible: item.pickable
-                    onClicked: page.pick(item.msgId)
+                    onClicked: page.pick(item.ids)
                 }
                 XAnimator { id: flyX; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.23, 1.0, 0.32, 1.0, 1.0, 1.0] }
                 YAnimator { id: flyY; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0] }
@@ -2928,8 +3087,7 @@ Page {
         chatId: page.chatId
         thread: page.thread
         locate: (id) => {           // a paged-to message's picture, when its bubble is on the page
-            const i = page.indexOf(id)
-            const it = i >= 0 ? list.itemAtIndex(i) : null
+            const it = page.shownAt(id)
             return it && it.media ? it.picFace : null
         }
         onSave: {
