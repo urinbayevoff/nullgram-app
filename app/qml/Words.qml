@@ -1,7 +1,7 @@
 // A message's words as Telegram draws them. Plain words are one Text; formatted ones (Store.rich's
 // parts) a column: words as StyledText (bold, italic, links a tap opens), a quote a tinted block with
 // a bar down its left and „ in its corner (one that folds shows three lines and ⌄ until tapped),
-// code a block of its own in a fixed-width face.
+// code a block of its own in a fixed-width face, a spoiler's letters hidden under Dust until tapped.
 import QtQuick
 
 Item {
@@ -11,7 +11,14 @@ Item {
     property color ink
     property color tint             // the links, a quote's bar and its tint
     property int size: 16
+    // the most it may be across: formatted words are laid out at that from the start (laid out at
+    // their own width, they were laid out at none first, a word a line, then again: a long post
+    // took 0.1 s to make while scrolling). Left-aligned, they look the same either way.
+    property real room: width
     property bool open: false       // a folding quote shown whole
+    property bool shown: false      // the spoilers tapped: their dust blows off, then link("spoiler")
+    onPartsChanged: shown = false
+    property bool live: true        // on the screen (a spoiler's dust moves only then)
     signal link(string url)
     signal fold()                   // a folding quote tapped
     // formatted words take the touch themselves (a link would keep a long press from the bubble):
@@ -52,11 +59,23 @@ Item {
             const what = column.item ? column.item.hit(mouse.x, mouse.y) : ""
             if (what === "fold")
                 words.fold()
+            else if (what === "spoiler") {
+                if (!words.shown) {
+                    words.shown = true
+                    blown.start()
+                }
+            }
             else if (what)
                 words.link(what)
             else
                 words.tapped()
         }
+    }
+
+    Timer {
+        id: blown
+        interval: 340
+        onTriggered: words.link("spoiler")
     }
 
     Loader {
@@ -112,9 +131,32 @@ Item {
                         clip: true
                         Rectangle { visible: part.q !== "pre"; width: 3; height: parent.height; color: words.tint }
                     }
+                    // the part as RichText: links in the tint, not underlined; a spoiler's letters unseen
+                    readonly property string rich: modelData.h
+                        .replace(/<a href="spoiler"/g, "<a style='color:" + (words.shown ? words.ink : "transparent") + ";text-decoration:none' href=\"spoiler\"")
+                        .replace(/<a href=/g, "<a style='color:" + words.tint + ";text-decoration:none' href=")
                     function hit(x, y) {
-                        const url = t.linkAt(x - t.x, y - t.y)
+                        let url = ""
+                        if (t.fancy)
+                            url = t.linkAt(x - t.x, y - t.y)
+                        else if (modelData.h.indexOf("<a ") >= 0) {
+                            const probe = prober.createObject(part)
+                            url = probe.linkAt(x - t.x, y - t.y)
+                            probe.destroy()
+                        }
                         return url ? url : q === "fold" ? "fold" : ""
+                    }
+                    Component {
+                        id: prober      // laid out as t is (bold 700 as StyledText's), only for a tap
+                        TextEdit {
+                            visible: false
+                            readOnly: true
+                            width: t.width
+                            wrapMode: t.wrapMode
+                            textFormat: TextEdit.RichText
+                            font: t.font
+                            text: part.rich
+                        }
                     }
                     Icon {
                         visible: part.q === "quote" || part.q === "fold" && !part.folds
@@ -132,26 +174,72 @@ Item {
                     Text {
                         id: t
                         x: part.padL; y: part.block ? 4 : 0
-                        width: parent.width - part.padL - part.padR
+                        width: Math.max(words.room, 1) - part.padL - part.padR
                         wrapMode: part.q === "pre" ? Text.WrapAnywhere : Text.Wrap
                         maximumLineCount: part.q === "fold" && !words.open ? 3 : 100000
                         elide: Text.ElideRight
-                        // links, code and bold as RichText: StyledText underlines every link (Telegram
-                        // does not), knows no font face and its bold is 700 (Telegram-iOS's is semibold).
-                        // RichText tells no line's width: the last part's comes from a TextEdit twin.
-                        readonly property bool fancy: /<a |monospace|<b>/.test(part.modelData.h)
+                        // StyledText, 4–5 times quicker to lay out than RichText (a long post as RichText
+                        // took 0.05 s to make, a stutter in a flick). It underlines links (Telegram does
+                        // not), so links are coloured words here and a tap finds them in a RichText
+                        // probe (hit). Inline code wants a face, which only RichText knows: such a
+                        // part is RichText, the last one's last line measured by a TextEdit twin.
+                        readonly property bool fancy: part.modelData.h.indexOf("monospace") >= 0
                         textFormat: fancy ? Text.RichText : Text.StyledText
                         property real laid: 0
                         readonly property real last: !fancy ? laid : twin.item ? twin.item.laid : width
                         onLineLaidOut: (line) => { if (line.isLast) laid = line.implicitWidth }
-                        text: fancy ? part.modelData.h.replace(/<a href="spoiler"/g, "<a style='color:" + words.ink + ";text-decoration:none' href=\"spoiler\"")
-                                                          .replace(/<a href=/g, "<a style='color:" + words.tint + ";text-decoration:none' href=")
-                                                          .replace(/<b>/g, "<span style='font-weight:600'>").replace(/<\/b>/g, "</span>")
-                                    : part.modelData.h
+                        text: fancy ? part.rich
+                                    : part.modelData.h.replace(/<a href="spoiler">/g, "<font color='" + (words.shown ? words.ink : "transparent") + "'>")
+                                                      .replace(/<a href="[^"]*">/g, "<font color='" + words.tint + "'>").replace(/<\/a>/g, "</font>")
                         color: words.ink
                         linkColor: words.tint
                         font.family: part.q === "pre" ? "monospace" : Theme.font
                         font.pixelSize: part.q === "pre" ? words.size - 2 : words.size
+                    }
+                    // a spoiler: where its letters are, line by line, from a TextEdit twin (which tells
+                    // each letter's place and link), and the dust over them
+                    Loader {
+                        id: spy
+                        active: part.modelData.h.indexOf("href=\"spoiler\"") >= 0
+                        sourceComponent: TextEdit {
+                            visible: false
+                            readOnly: true
+                            width: t.width
+                            wrapMode: t.wrapMode
+                            textFormat: TextEdit.RichText
+                            font: t.font
+                            text: part.rich
+                            readonly property var rects: (contentHeight, width, places())
+                            function places() {
+                                const out = []
+                                let cur = null
+                                for (let p = 0; p < length; p++) {
+                                    const r = positionToRectangle(p)
+                                    if (linkAt(r.x + 1, r.y + r.height / 2) !== "spoiler") {
+                                        cur = null
+                                        continue
+                                    }
+                                    const n = positionToRectangle(p + 1)
+                                    const right = n.y === r.y && n.x > r.x ? n.x : r.x + font.pixelSize * 0.5
+                                    if (cur && cur.y === r.y && Math.abs(cur.x + cur.w - r.x) < 1)
+                                        cur.w = right - cur.x
+                                    else {
+                                        cur = { x: r.x, y: r.y, w: right - r.x, h: r.height }
+                                        out.push(cur)
+                                    }
+                                }
+                                return out
+                            }
+                        }
+                    }
+                    Dust {
+                        visible: spy.active
+                        x: t.x; y: t.y
+                        width: t.width; height: t.height
+                        rects: spy.item ? spy.item.rects : []
+                        ink: words.ink
+                        gone: words.shown
+                        live: words.live
                     }
                     Loader {
                         id: twin

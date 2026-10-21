@@ -14,6 +14,8 @@ import ctypes
 import json
 import hashlib
 import os
+import queue
+import random
 import shutil
 import signal
 import socket
@@ -24,7 +26,7 @@ import threading
 # letters over 64 px are drawn from outlines every time, uncached; at the S10's 4x that is all of them
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
-from PySide6.QtCore import Property, QFileSystemWatcher, QObject, QRectF, QSocketNotifier, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QFileSystemWatcher, QObject, QPointF, QRectF, QSize, QSocketNotifier, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QSyntaxHighlighter, QTextCharFormat, QImage, QImageReader, QPainter, QPainterPath
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
@@ -372,58 +374,120 @@ class Ink(QObject):
 		p.rehighlight()
 
 
-class Thumb(QQuickImageProvider):
+class Imager:
+	"""The pictures image://pic, round and thumb give, made in helper processes (nullgram.py
+	--imager): PySide holds the interpreter's lock all through QImage's work, so made on Qt's
+	loading threads they kept the UI thread waiting whenever it called into Python (sending to
+	TDLib, a property): a flick through a group's pictures stood still up to 0.4 s. A loading thread
+	here only waits on a pipe, which lets the lock go. Pixels come back raw, ARGB32 premultiplied."""
+
+	def __init__(self, n=2):
+		self.free = queue.Queue()
+		for _ in range(n):
+			self.free.put(self.spawn())
+
+	@staticmethod
+	def spawn():
+		return subprocess.Popen([sys.executable, os.path.abspath(__file__), "--imager"],
+		                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+	def ask(self, kind, key, requested):
+		w, h = (requested.width(), requested.height()) if requested.isValid() else (-1, -1)
+		p = self.free.get()
+		try:
+			p.stdin.write(("%s\t%d\t%d\t%s\n" % (kind, w, h, key)).encode())
+			p.stdin.flush()
+			w, h = (int(x) for x in p.stdout.readline().split())
+			data = p.stdout.read(w * h * 4)
+			if len(data) < w * h * 4:
+				raise OSError("short")
+		except (OSError, ValueError):
+			p.kill()
+			p = self.spawn()
+			w, h, data = 1, 1, bytes(4)
+		finally:
+			self.free.put(p)
+		return QImage(data, w, h, 4 * w, QImage.Format_ARGB32_Premultiplied).copy()
+
+
+def imager():
+	"""--imager: an Imager's helper: a line in (kind, width, height, key), the picture out."""
+	os.environ["QT_QPA_PLATFORM"] = "offscreen"
+	app = QGuiApplication(sys.argv[:1])
+	makers = {"pic": make_pic, "round": make_round, "thumb": make_thumb}
+	out = sys.stdout.buffer
+	for line in sys.stdin.buffer:
+		kind, w, h, key = line.decode().rstrip("\n").split("\t", 3)
+		try:
+			img = makers[kind](key, QSize(int(w), int(h)))
+		except Exception as e:
+			print("nullgram: imager:", kind, key[:80], e, file=sys.stderr, flush=True)
+			img = QImage()
+		if img.isNull():
+			img = QImage(1, 1, QImage.Format_ARGB32_Premultiplied)
+			img.fill(Qt.transparent)
+		img = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+		out.write(b"%d %d\n" % (img.width(), img.height()))
+		out.write(bytes(img.constBits())[:img.width() * img.height() * 4] if img.bytesPerLine() == 4 * img.width()
+		          else b"".join(bytes(img.constScanLine(y))[:4 * img.width()] for y in range(img.height())))
+		out.flush()
+	del app
+
+
+class Asked(QQuickImageProvider):
+	"""image://<kind>/...: an Imager's picture, on Qt's image-loading threads."""
+
+	def __init__(self, imager, kind):
+		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
+		self.imager, self.kind = imager, kind
+
+	def requestImage(self, key, size, requested):
+		return self.imager.ask(self.kind, key, requested)
+
+
+THUMBS = os.path.expanduser("~/.cache/nullgram/thumbs")
+
+
+def make_thumb(path, requested):
 	"""image://thumb/<path>: a still of a video file (a frame half a second in, by ffmpeg, kept in
-	the cache), or the picture itself; for the attach sheet. On Qt's image-loading threads."""
-
-	def __init__(self):
-		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
-		self.cache = os.path.expanduser("~/.cache/nullgram/thumbs")
-		os.makedirs(self.cache, exist_ok=True)
-
-	def requestImage(self, path, size, requested):
-		src = path
-		if os.path.splitext(path)[1].lower() in VIDEO:
-			st = os.stat(path)
-			key = hashlib.sha1(("%s %d %d" % (path, st.st_size, st.st_mtime)).encode()).hexdigest()
-			src = os.path.join(self.cache, key + ".jpg")
-			if not os.path.exists(src):
-				subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
-				                "-vf", "scale=320:-2", src], timeout=20)
-		r = QImageReader(src)
-		r.setAutoTransform(True)
-		if requested.isValid() and requested.width() > 0:
-			full = r.size()
-			if full.isValid() and full.width() > 0:
-				k = max(requested.width() / full.width(), requested.height() / max(full.height(), 1))
-				if k < 1:
-					r.setScaledSize(full * k)
-		img = r.read()
-		return img if not img.isNull() else QImage(1, 1, QImage.Format_ARGB32_Premultiplied)
+	the cache), or the picture itself; for the attach sheet."""
+	src = path
+	if os.path.splitext(path)[1].lower() in VIDEO:
+		os.makedirs(THUMBS, exist_ok=True)
+		st = os.stat(path)
+		key = hashlib.sha1(("%s %d %d" % (path, st.st_size, st.st_mtime)).encode()).hexdigest()
+		src = os.path.join(THUMBS, key + ".jpg")
+		if not os.path.exists(src):
+			subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
+			                "-vf", "scale=320:-2", src], timeout=20)
+	r = QImageReader(src)
+	r.setAutoTransform(True)
+	if requested.isValid() and requested.width() > 0:
+		full = r.size()
+		if full.isValid() and full.width() > 0:
+			k = max(requested.width() / full.width(), requested.height() / max(full.height(), 1))
+			if k < 1:
+				r.setScaledSize(full * k)
+	img = r.read()
+	return img if not img.isNull() else QImage(1, 1, QImage.Format_ARGB32_Premultiplied)
 
 
-class Round(QQuickImageProvider):
-	"""image://round/<path>: the picture cut to a circle at the size asked. Qt calls it on its
-	image-loading threads (Image.asynchronous), so the UI thread never waits for it."""
-
-	def __init__(self):
-		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
-
-	def requestImage(self, path, size, requested):
-		src = QImage(path.removeprefix("file://"))
-		side = max(requested.width(), requested.height(), 1) if requested.isValid() else min(src.width(), src.height())
-		out = QImage(side, side, QImage.Format_ARGB32_Premultiplied)
-		out.fill(Qt.transparent)
-		if not src.isNull():
-			p = QPainter(out)
-			p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-			clip = QPainterPath()
-			clip.addEllipse(QRectF(0, 0, side, side))
-			p.setClipPath(clip)
-			big = src.scaled(side, side, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-			p.drawImage(0, 0, big, (big.width() - side) // 2, (big.height() - side) // 2, side, side)
-			p.end()
-		return out
+def make_round(path, requested):
+	"""image://round/<path>: the picture cut to a circle at the size asked."""
+	src = QImage(path.removeprefix("file://"))
+	side = max(requested.width(), requested.height(), 1) if requested.isValid() else min(src.width(), src.height())
+	out = QImage(side, side, QImage.Format_ARGB32_Premultiplied)
+	out.fill(Qt.transparent)
+	if not src.isNull():
+		p = QPainter(out)
+		p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+		clip = QPainterPath()
+		clip.addEllipse(QRectF(0, 0, side, side))
+		p.setClipPath(clip)
+		big = src.scaled(side, side, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+		p.drawImage(0, 0, big, (big.width() - side) // 2, (big.height() - side) // 2, side, side)
+		p.end()
+	return out
 
 
 def _corners(w, h, rs):
@@ -443,48 +507,43 @@ def _corners(w, h, rs):
 	return path
 
 
-class Pic(QQuickImageProvider):
+def make_pic(key, requested):
 	"""image://pic/<radius>/<width>/<path> (or .../mini/<base64>): a message's picture at the size
 	asked, cut to the middle, its corners rounded (radius 0: none; -1: a circle; "14,4,4,14": each
 	corner its own, from the top left round, as an album's pictures have them). `width` is the
 	item's in points, so the radius scales with the pixels asked. `mini` is Telegram's tiny blurred
-	preview, there before the picture is. On Qt's image-loading threads."""
-
-	def __init__(self):
-		super().__init__(QQuickImageProvider.Image, QQuickImageProvider.ForceAsynchronousImageLoading)
-
-	def requestImage(self, key, size, requested):
-		radius, width, rest = key.split("/", 2)
-		if rest.startswith("mini/"):
-			src = QImage.fromData(base64.b64decode(rest[5:]))
-		else:
-			src = QImage(rest)
-		if requested.isValid() and requested.width() > 0 and requested.height() > 0:
-			w, h = requested.width(), requested.height()
-		else:
-			w, h = max(src.width(), 1), max(src.height(), 1)
-		out = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-		out.fill(Qt.transparent)
-		if src.isNull():
-			return out
-		k = w / max(float(width), 1.0)
-		rs = [float(x) for x in radius.split(",")]
-		r = rs[0]
-		p = QPainter(out)
-		p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-		if len(rs) == 4:
-			p.setClipPath(_corners(w, h, [min(x * k, w / 2, h / 2) for x in rs]))
-		elif r:
-			clip = QPainterPath()
-			if r < 0:
-				clip.addEllipse(QRectF(0, 0, w, h))
-			else:
-				clip.addRoundedRect(QRectF(0, 0, w, h), r * k, r * k)
-			p.setClipPath(clip)
-		big = src.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-		p.drawImage(0, 0, big, (big.width() - w) // 2, (big.height() - h) // 2, w, h)
-		p.end()
+	preview, there before the picture is."""
+	radius, width, rest = key.split("/", 2)
+	if rest.startswith("mini/"):
+		src = QImage.fromData(base64.b64decode(rest[5:]))
+	else:
+		src = QImage(rest)
+	if requested.isValid() and requested.width() > 0 and requested.height() > 0:
+		w, h = requested.width(), requested.height()
+	else:
+		w, h = max(src.width(), 1), max(src.height(), 1)
+	out = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+	out.fill(Qt.transparent)
+	if src.isNull():
 		return out
+	k = w / max(float(width), 1.0)
+	rs = [float(x) for x in radius.split(",")]
+	r = rs[0]
+	p = QPainter(out)
+	p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+	if len(rs) == 4:
+		p.setClipPath(_corners(w, h, [min(x * k, w / 2, h / 2) for x in rs]))
+	elif r:
+		clip = QPainterPath()
+		if r < 0:
+			clip.addEllipse(QRectF(0, 0, w, h))
+		else:
+			clip.addRoundedRect(QRectF(0, 0, w, h), r * k, r * k)
+		p.setClipPath(clip)
+	big = src.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+	p.drawImage(0, 0, big, (big.width() - w) // 2, (big.height() - h) // 2, w, h)
+	p.end()
+	return out
 
 
 class Bubble(QQuickImageProvider):
@@ -536,6 +595,37 @@ class Bubble(QQuickImageProvider):
 		return img
 
 
+class Dust(QQuickImageProvider):
+	"""image://dust/<rrggbb>/<seed>/<pixels>: a square of a spoiler's dust to tile (Dust.qml): dots of
+	the words' colour, under a point across, some faint; those over an edge drawn again on the other
+	side, so the tiles meet unseen. About one dot to 12 square points, as Telegram's looks."""
+
+	def __init__(self):
+		super().__init__(QQuickImageProvider.Image)
+
+	def requestImage(self, key, size, requested):
+		colour, seed, pixels = key.split("/")
+		n = max(int(pixels), 8)
+		k = n / 64.0		# pixels a point
+		rnd = random.Random(colour + seed)
+		img = QImage(n, n, QImage.Format_ARGB32_Premultiplied)
+		img.fill(Qt.transparent)
+		p = QPainter(img)
+		p.setRenderHint(QPainter.Antialiasing)
+		p.setPen(Qt.NoPen)
+		c = QColor("#" + colour)
+		for _ in range(64 * 64 // 12):
+			x, y = rnd.random() * n, rnd.random() * n
+			r = rnd.uniform(0.3, 0.6) * k
+			c.setAlphaF(rnd.uniform(0.3, 1.0))
+			p.setBrush(c)
+			for dx in ((-n,) if x > n - r else (n,) if x < r else ()) + (0,):
+				for dy in ((-n,) if y > n - r else (n,) if y < r else ()) + (0,):
+					p.drawEllipse(QPointF(x + dx, y + dy), r, r)
+		p.end()
+		return img
+
+
 class Wall(QQuickImageProvider):
 	"""image://wall/<rrggbb,rrggbb,rrggbb,rrggbb>: Telegram's freeform wallpaper, its four colours
 	blended by nearness (weight max(0, 0.9 - d)^4), small: drawn large it stays smooth."""
@@ -563,6 +653,11 @@ def main():
 	# every 33 ms, and Qt's default driver then played every animation at half speed (the
 	# gallery's black took 1.5 s to go instead of 0.25 s)
 	os.environ.setdefault("QSG_USE_SIMPLE_ANIMATION_DRIVER", "1")
+	# NULLGRAM_PROFILE=<port>: QML's profiler may attach there (qmlprofiler --attach localhost -p <port>)
+	if os.environ.get("NULLGRAM_PROFILE"):
+		from PySide6.QtQml import QQmlDebuggingEnabler
+		QQmlDebuggingEnabler.enableDebugging(True)
+		sys.argv.append("-qmljsdebugger=port:%s,block" % os.environ["NULLGRAM_PROFILE"])
 	app = QGuiApplication(sys.argv)
 	app.setOrganizationName("OmonullOS")
 	app.setApplicationName("Nullgram")
@@ -575,11 +670,13 @@ def main():
 	view.rootContext().setContextProperty("osk", osk)
 	ink = Ink()
 	view.rootContext().setContextProperty("ink", ink)
-	view.engine().addImageProvider("round", Round())
+	imagers = Imager()
+	view.engine().addImageProvider("round", Asked(imagers, "round"))
 	view.engine().addImageProvider("wall", Wall())
 	view.engine().addImageProvider("bubble", Bubble())
-	view.engine().addImageProvider("pic", Pic())
-	view.engine().addImageProvider("thumb", Thumb())
+	view.engine().addImageProvider("pic", Asked(imagers, "pic"))
+	view.engine().addImageProvider("thumb", Asked(imagers, "thumb"))
+	view.engine().addImageProvider("dust", Dust())
 	view.setResizeMode(QQuickView.SizeRootObjectToView)
 	view.setSource(QUrl.fromLocalFile(os.path.join(HERE, "qml", "Main.qml")))
 	if view.status() == QQuickView.Error:
@@ -640,4 +737,4 @@ def main():
 
 
 if __name__ == "__main__":
-	main()
+	imager() if "--imager" in sys.argv else main()

@@ -603,7 +603,7 @@ QtObject {
     // JSON of its parts, [{ q, h }]: q "" for words, "quote", "fold" (a quote that opens), "pre" (code),
     // h the part as StyledText. Quotes and code stand apart; the rest is bold, italic, links (href:
     // the url, or "@name", "#tag", "/command", "user:<id>", "time:<s>", "spoiler"). A spoiler is
-    // ░ until `bare`. (TDLib's offsets are in UTF-16, as JavaScript's strings.)
+    // a link to "spoiler" until `bare` (Words hides its letters under dust). (TDLib's offsets are in UTF-16, as JavaScript's strings.)
     readonly property var marks: ({
         textEntityTypeBold: ["<b>", "</b>"], textEntityTypeItalic: ["<i>", "</i>"],
         textEntityTypeUnderline: ["<u>", "</u>"], textEntityTypeStrikethrough: ["<s>", "</s>"],
@@ -649,8 +649,6 @@ QtObject {
             let piece = s.slice(a, b)
             cur.raw += piece
             const spoiled = !bare && over.some((e) => e.type["@type"] === "textEntityTypeSpoiler")
-            if (spoiled)
-                piece = piece.replace(/\S/g, "░")
             let h = escaped(piece)
             for (const e of over) {
                 const m = marks[e.type["@type"]]

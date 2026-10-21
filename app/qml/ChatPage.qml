@@ -339,18 +339,46 @@ Page {
     function add(got) {
         const k = messages.count - 1
         // one that came as an update while these were asked for is here already
-        const have = {}
-        for (let i = 0; i < messages.count; i++)
-            have[messages.get(i).msgId] = true
-        got = got.filter((m) => !have[m.id])
+        got = got.filter((m) => rowAt[m.id] === undefined)
         for (const m of got)
             remember(m)
-        for (const m of got)
-            messages.append(row(m))
+        // at once: one by one each told the list and the albums (a page of 40 held a flick for 0.4 s)
+        if (got.length)
+            messages.append(got.map((m) => row(m)))
         // the one that was the oldest has neighbours now: its day and run are worked out again
         if (k >= 0 && got.length)
             messages.setProperty(k, "edge", messages.get(k).edge + 1)
     }
+
+    // older ones while the list may be moving: a few rows a frame, then `done` (a page of 40 at
+    // once held a flick for 50 ms)
+    property var feeding: []
+    property var fed: null
+    function addLater(got, done) {
+        got = got.filter((m) => rowAt[m.id] === undefined)
+        for (const m of got)
+            remember(m)
+        feeding = got
+        fed = done
+        feeder.restart()
+    }
+    function feed() {
+        const part = feeding.splice(0, 6)
+        if (part.length) {
+            const k = messages.count - 1
+            messages.append(part.map((m) => row(m)))
+            if (k >= 0)
+                messages.setProperty(k, "edge", messages.get(k).edge + 1)
+        }
+        if (!feeding.length) {
+            feeder.stop()
+            const done = fed
+            fed = null
+            if (done)
+                done()
+        }
+    }
+    Timer { id: feeder; interval: 16; repeat: true; triggeredOnStart: true; onTriggered: page.feed() }
 
     function remember(m) {
         quotes[m.id] = { name: m.is_outgoing ? "Siz" : store.senderName(m.sender_id, false) || (chat ? chat.title : ""),
@@ -663,10 +691,14 @@ Page {
     property string albumKey: ""
     property int albumRev: 0            // the albums' make-up changed (their mosaics are laid out again)
     property int albumTick: 0           // a member's row changed (its picture came, its file moves on)
+    property var rowAt: ({})            // message id -> its row, as regroup last saw them (indexOf checks it)
+    property var laidOut: ({})          // "ids/width" -> an album's mosaic (tilesOf)
     function regroup() {
         const g = {}
+        const at = {}
         for (let i = 0; i < messages.count; i++) {
             const r = messages.get(i)
+            at[r.msgId] = i
             if (!r.album)
                 continue
             const a = g[r.album] || (g[r.album] = { ids: [], main: 0, words: 0, talk: -1, talkId: 0 })
@@ -682,15 +714,54 @@ Page {
             g[k].ids.sort((a, b) => a - b)
             g[k].main = g[k].words || g[k].ids[0]
         }
+        rowAt = at
         const key = JSON.stringify(g)
         if (key === albumKey)
             return false
         albumKey = key
         albums = g
+        laidOut = {}
         albumRev++
         if (list.down || scroll.running)
             Qt.callLater(page.keepDown)
         return true
+    }
+    // older rows put at the end: only they are looked at (all of them each time took 11 ms a page)
+    function regroupAdded(first, last) {
+        let g = null
+        const touched = []
+        for (let i = first; i <= last; i++) {
+            const r = messages.get(i)
+            rowAt[r.msgId] = i
+            if (!r.album)
+                continue
+            if (!g)
+                g = Object.assign({}, albums)
+            if (touched.indexOf(r.album) < 0) {
+                touched.push(r.album)
+                const was = g[r.album]
+                g[r.album] = was ? { ids: was.ids.slice(), main: 0, words: was.words, talk: was.talk, talkId: was.talkId }
+                                 : { ids: [], main: 0, words: 0, talk: -1, talkId: 0 }
+            }
+            const a = g[r.album]
+            a.ids.push(r.msgId)
+            if (r.text && !a.words)
+                a.words = r.msgId
+            if (r.comments > a.talk) {
+                a.talk = r.comments
+                a.talkId = r.msgId
+            }
+        }
+        if (!g)
+            return
+        for (const k of touched) {
+            g[k].ids.sort((a, b) => a - b)
+            g[k].main = g[k].words || g[k].ids[0]
+        }
+        albumKey = JSON.stringify(g)
+        albums = g
+        laidOut = {}
+        albumRev++
     }
     // an album's next message came as the list went down to its first: its bubble is another
     // height now (a mosaic), the newest stays at the bottom
@@ -724,6 +795,9 @@ Page {
     }
     // the mosaic `wide` across: { width, height, items: [{ id, x, y, w, h, corner }] }
     function tilesOf(g, wide) {
+        const key = g.ids.join(",") + "/" + Math.floor(wide)
+        if (laidOut[key])
+            return laidOut[key]
         const cells = g.ids.map((id) => ({ id: id, c: cellOf(id) })).filter((x) => x.c)
         const lay = Mosaic.layout(cells.map((x) => ({ w: x.c.picW, h: x.c.picH })), Math.floor(wide), 64, 2)
         const round = (it, a, b) => it.sides.indexOf(a) >= 0 && it.sides.indexOf(b) >= 0 ? 14 : 3
@@ -731,6 +805,8 @@ Page {
             it.id = cells[k].id
             it.corner = [round(it, "t", "l"), round(it, "t", "r"), round(it, "b", "r"), round(it, "b", "l")].join(",")
         })
+        if (cells.length === g.ids.length)
+            laidOut[key] = lay
         return lay
     }
     // what shows message `id`'s picture: its tile when it is in an album's mosaic, else its row
@@ -749,7 +825,12 @@ Page {
     }
     Connections {
         target: messages
-        function onRowsInserted() { page.regroup() }
+        function onRowsInserted(parent, first, last) {
+            if (first > 0 && last === messages.count - 1)
+                page.regroupAdded(first, last)
+            else
+                page.regroup()
+        }
         function onRowsRemoved() { page.regroup() }
         function onModelReset() { page.regroup() }
         function onDataChanged(from, to) {
@@ -788,6 +869,9 @@ Page {
     }
 
     function indexOf(id) {
+        const k = rowAt[id]
+        if (k !== undefined && k < messages.count && messages.get(k).msgId === id)
+            return k
         for (let i = 0; i < messages.count; i++)
             if (messages.get(i).msgId === id)
                 return i
@@ -867,8 +951,7 @@ Page {
             }
             for (const m of got)
                 page.remember(m)
-            for (let k = got.length - 1; k >= 0; k--)
-                messages.insert(0, page.row(got[k]))
+            messages.insert(0, got.map((m) => page.row(m)))
             const last = page.chat && page.chat.last_message
             if (last && got[0].id >= last.id)
                 page.gap = false
@@ -884,11 +967,12 @@ Page {
         store.history(chatId, messages.get(messages.count - 1).msgId, 40, (got, failed) => {
             if (!page)
                 return
-            page.add(page.withRoot(got, !failed && got.length < 40))
-            page.more = failed || got.length > 0
-            page.loading = false
-            if (!failed)
-                Qt.callLater(page.nearTop)      // still near the top (a short page, a fast flick): the next ones
+            page.addLater(page.withRoot(got, !failed && got.length < 40), () => {
+                page.more = failed || got.length > 0
+                page.loading = false
+                if (!failed)
+                    Qt.callLater(page.nearTop)  // still near the top (a short page, a fast flick): the next ones
+            })
         }, null, thread)
     }
 
@@ -1601,6 +1685,9 @@ Page {
                 page.nearBottom()
                 seenLater.restart()
             }
+            // where it stands, in steps of 100: what every row asks each frame of a flick (inSight,
+            // onScreen) is worked out again only when it moves on a step
+            readonly property real seen: Math.round(contentY / 100) * 100
             // whether it stands at the newest: then it stays there when the field grows or shrinks
             property bool down: true
             onMovementEnded: down = atYBeginning
@@ -1671,8 +1758,8 @@ Page {
                 readonly property bool bare: picKind === "sticker" || picKind === "round" || jumbo > 0
                 // nearly on the screen: a GIF's player is made ready; on it: only then it plays (one
                 // playing just off the screen kept the whole window redrawn at the video's 30 fps)
-                readonly property bool inSight: y + height > list.contentY - 200 && y < list.contentY + list.height + 200
-                readonly property bool onScreen: y + height > list.contentY && y < list.contentY + list.height
+                readonly property bool inSight: y + height > list.seen - 300 && y < list.seen + list.height + 300
+                readonly property bool onScreen: y + height > list.seen - 100 && y < list.seen + list.height + 100
                 readonly property real aspect: picH / picW
                 readonly property real pw: mosaic ? tiles.width : picKind === "round" ? 200 : picKind === "sticker" ? 160 * Math.min(1, 1 / aspect)
                                          : aspect * wide > 360 ? Math.max(150, 360 / aspect) : wide
@@ -2025,31 +2112,37 @@ Page {
                             visible: item.rowKind !== ""
                             x: 12
                             y: quote.visible ? quote.y + quote.height + 6 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 6
-                            width: item.rowKind === "file" ? fileRow.width : 230
+                            width: item.rowKind === "file" ? (fileRow.item ? fileRow.item.width : 0) : 230
                             height: visible ? 50 : 0
-                            AudioRow {
-                                visible: item.rowKind === "voice" || item.rowKind === "audio"
-                                kind: item.rowKind === "audio" ? "audio" : "voice"
-                                out: item.out
-                                wave: item.wave
-                                dur: item.dur
-                                title: item.title
-                                sub: item.sub
-                                got: item.got
-                                here: item.path !== ""
-                                current: page.soundId === item.msgId
-                                playing: current && sound.playbackState === MediaPlayer.PlayingState
-                                at: current ? sound.position : 0
+                            // made only for such a message (each row made both: a voice note's 43 bars
+                            // for every message made while scrolling)
+                            Loader {
+                                active: item.rowKind === "voice" || item.rowKind === "audio"
+                                sourceComponent: AudioRow {
+                                    kind: item.rowKind === "audio" ? "audio" : "voice"
+                                    out: item.out
+                                    wave: item.wave
+                                    dur: item.dur
+                                    title: item.title
+                                    sub: item.sub
+                                    got: item.got
+                                    here: item.path !== ""
+                                    current: page.soundId === item.msgId
+                                    playing: current && sound.playbackState === MediaPlayer.PlayingState
+                                    at: current ? sound.position : 0
+                                }
                             }
-                            FileRow {
+                            Loader {
                                 id: fileRow
-                                visible: item.rowKind === "file"
-                                out: item.out
-                                name: item.fileName
-                                size: item.fileSize
-                                got: item.got
-                                here: item.path !== ""
-                                thumb: item.pic
+                                active: item.rowKind === "file"
+                                sourceComponent: FileRow {
+                                    out: item.out
+                                    name: item.fileName
+                                    size: item.fileSize
+                                    got: item.got
+                                    here: item.path !== ""
+                                    thumb: item.pic
+                                }
                             }
                         }
                         Words {
@@ -2061,6 +2154,8 @@ Page {
                             height: (attach.visible || item.media) && !text && !parts ? 0 : implicitHeight
                             width: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, Math.min(implicitWidth, item.most - 24))
                                  : Math.min(implicitWidth, item.most - 24)
+                            live: item.onScreen
+                            room: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, item.most - 24) : item.most - 24
                             text: (item.kind ? "[" + item.kind + "] " : "") + item.text
                             parts: item.kind ? "" : item.rich
                             ink: item.out ? Theme.outText : Theme.inText
