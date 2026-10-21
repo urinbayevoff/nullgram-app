@@ -15,10 +15,12 @@ QtObject {
     property int unreadChats: 0         // the main list's chats with unread messages, not muted
     property var folders: []            // the user's chat folders: [{ id, name }], in their order
     property var folderUnread: ({})     // folder id -> its chats with unread messages, not muted
-    property int folder: 0              // the list chatList shows: 0 the main one, else that folder
+    property int folder: 0              // the list on the screen: 0 the main one, else that folder
     property var openChat: 0            // the chat on the screen (its new messages do not notify)
 
     readonly property ListModel chatList: ListModel {}     // the main list in Telegram's order
+    property var folderLists: ({})      // folder id -> its ListModel, made when first shown, kept up after
+    readonly property Component listModel: Component { ListModel {} }
     property var chats: ({})
     property var users: ({})
     property var groups: ({})           // "b" + basic group id, "s" + supergroup id
@@ -156,6 +158,11 @@ QtObject {
         },
         updateChatFolders: (u) => {
             store.folders = u.chat_folders.map((f) => ({ id: f.id, name: f.name.text.text }))
+            for (const k in store.folderLists)
+                if (!store.folders.some((f) => String(f.id) === k)) {
+                    store.folderLists[k].destroy()
+                    delete store.folderLists[k]
+                }
             if (store.folder && !store.folders.some((f) => f.id === store.folder))
                 store.showFolder(0)
         },
@@ -219,47 +226,62 @@ QtObject {
         c.positions = c.positions.filter((q) => !sameList(q.list, p.list))
         if (p.order !== "0")
             c.positions.push(p)
-        if (sameList(p.list, shown()))
-            place(c)
+        const at = listId(p.list)
+        if (at !== null && (at === 0 || folderLists[at]))
+            placeIn(at, c)
     }
 
     function sameList(a, b) {
         return a["@type"] === b["@type"] && (a["@type"] !== "chatListFolder" || a.chat_folder_id === b.chat_folder_id)
     }
 
-    // the list chatList shows
-    function shown() {
-        return folder ? { "@type": "chatListFolder", chat_folder_id: folder } : { "@type": "chatListMain" }
+    // a TDLib chat list by our id (0 the main one, else a folder's), and back (null: the archive)
+    function chatListOf(id) {
+        return id ? { "@type": "chatListFolder", chat_folder_id: id } : { "@type": "chatListMain" }
     }
-
-    function mainPosition(c) {
-        const list = shown()
+    function listId(list) {
+        return list["@type"] === "chatListMain" ? 0 : list["@type"] === "chatListFolder" ? list.chat_folder_id : null
+    }
+    function shown() {
+        return chatListOf(folder)
+    }
+    function positionIn(id, c) {
+        const list = chatListOf(id)
         for (const p of c.positions)
             if (sameList(p.list, list))
                 return p
         return null
     }
+    function mainPosition(c) {
+        return positionIn(0, c)
+    }
 
-    // another list in chatList: its chats now (sorted by their order there), then TDLib loads more
-    function showFolder(id) {
-        if (id === folder)
-            return
-        folder = id
-        chatList.clear()
+    // the rows of a list: the main one always there, a folder's made the first time it is asked for
+    // (its chats now, sorted by their order there; TDLib then loads more) and kept up from then on, so
+    // that going back to it shows it at once with its pictures
+    function modelOf(id) {
+        if (!id)
+            return chatList
+        let m = folderLists[id]
+        if (m)
+            return m
+        m = listModel.createObject(store)
+        folderLists[id] = m
         const rows = []
         for (const k in chats) {
-            const c = chats[k]
-            const p = mainPosition(c)
-            if (p) {
-                c.order = p.order
-                c.pinned = p.is_pinned
-                rows.push(c)
-            }
+            const p = positionIn(id, chats[k])
+            if (p)
+                rows.push({ c: chats[k], order: p.order })
         }
         rows.sort((a, b) => before(a.order, b.order) ? -1 : 1)
-        for (const c of rows)
-            chatList.append(row(c))
-        send({ "@type": "loadChats", chat_list: shown(), limit: 100 })
+        for (const r of rows)
+            m.append(row(r.c, id))
+        send({ "@type": "loadChats", chat_list: chatListOf(id), limit: 100 })
+        return m
+    }
+    function showFolder(id) {
+        modelOf(id)
+        folder = id
     }
 
     // orders are int64 written as text: longer is bigger, else compare the text
@@ -267,46 +289,60 @@ QtObject {
         return a.length !== b.length ? a.length > b.length : a > b
     }
 
-    function rowIndex(id) {
-        for (let i = 0; i < chatList.count; i++)
-            if (chatList.get(i).chatId === id)
+    function rowIndex(m, id) {
+        for (let i = 0; i < m.count; i++)
+            if (m.get(i).chatId === id)
                 return i
         return -1
     }
 
-    // put a chat where its order says (or out of the list when it has none)
+    // put a chat where its order says in every list kept (or out of one where it has none)
     function place(c) {
-        const p = mainPosition(c)
-        const at = rowIndex(c.id)
+        placeIn(0, c)
+        for (const k in folderLists)
+            placeIn(Number(k), c)
+    }
+    function placeIn(id, c) {
+        const m = modelOf(id)
+        const p = positionIn(id, c)
+        const at = rowIndex(m, c.id)
         if (!p) {
             if (at >= 0)
-                chatList.remove(at)
+                m.remove(at)
             return
         }
-        c.order = p.order
-        c.pinned = p.is_pinned
+        if (!id) {
+            c.order = p.order       // (the search sorts by it)
+            c.pinned = p.is_pinned
+        }
+        const order = (q) => { const r = positionIn(id, q); return r ? r.order : "0" }
         let to = 0
-        while (to < chatList.count) {
-            const other = chatList.get(to).chatId
-            if (other !== c.id && before(c.order, chats[other].order))
+        while (to < m.count) {
+            const other = m.get(to).chatId
+            if (other !== c.id && before(p.order, order(chats[other])))
                 break
             to++
         }
         if (at < 0) {
-            chatList.insert(to, row(c))
+            m.insert(to, row(c, id))
             return
         }
         if (to > at)
             to--
         if (to !== at)
-            chatList.move(at, to, 1)
-        chatList.set(to, row(c))
+            m.move(at, to, 1)
+        m.set(to, row(c, id))
     }
 
     function refresh(c) {
-        const at = rowIndex(c.id)
+        let at = rowIndex(chatList, c.id)
         if (at >= 0)
-            chatList.set(at, row(c))
+            chatList.set(at, row(c, 0))
+        for (const k in folderLists) {
+            at = rowIndex(folderLists[k], c.id)
+            if (at >= 0)
+                folderLists[k].set(at, row(c, Number(k)))
+        }
     }
 
     // ---- outside the app: banners, the tile, being online ------------------------
@@ -356,8 +392,9 @@ QtObject {
         send({ "@type": "setOption", name: "online", value: { "@type": "optionValueBoolean", value: inFront } })
 
     // ---- what a row shows ----------------------------------------------------
-    function row(c) {
+    function row(c, list) {
         const m = c.last_message
+        const at = positionIn(list || 0, c)
         const said = m ? service(m, c) : null
         let text = said !== null ? said : m ? preview(m.content) : ""
         let who = ""
@@ -374,7 +411,7 @@ QtObject {
         const muted = c.notification_settings && c.notification_settings.mute_for > 0
         return {
             chatId: c.id, title: title(c), saved: isSaved(c), who: who, preview: text.replace(/\s+/g, " "),
-            time: m ? stamp(m.date) : "", unread: c.unread_count || 0, muted: muted, pinned: !!c.pinned,
+            time: m ? stamp(m.date) : "", unread: c.unread_count || 0, muted: muted, pinned: !!(at && at.is_pinned),
             photo: photoPath(c), letters: letters(c.title), tint: tints[Math.abs(c.id) % tints.length],
             outgoing: !!(m && m.is_outgoing), read: !!(m && m.is_outgoing && m.id <= (c.last_read_outbox_message_id || 0))
         }
