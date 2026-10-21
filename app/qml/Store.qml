@@ -947,9 +947,9 @@ QtObject {
                                         text: { "@type": "formattedText", text: text } } }, check)
     }
 
-    function forward(toChat, fromChat, ids, done) {
+    function forward(toChat, fromChat, ids, copy, done) {
         send({ "@type": "forwardMessages", chat_id: toChat, from_chat_id: fromChat, message_ids: ids,
-               send_copy: false, remove_caption: false }, (r) => {
+               send_copy: copy, remove_caption: false }, (r) => {
             check(r)
             if (done)
                 done(r["@type"] !== "error")

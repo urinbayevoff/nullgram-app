@@ -67,13 +67,20 @@ Page {
     property bool translating: false
     property var originals: ({})        // message id -> its own words, while shown translated
     property var translations: ({})     // message id -> the Uzbek, asked once
+    property var ones: ({})             // message id -> true: that one alone in Uzbek (its menu's "Tarjima qilish")
     function translateId(id) {
         const i = indexOf(id)
-        if (i < 0 || !translating)
+        const one = !!ones[id]
+        if (i < 0 || !(translating || one))
             return
         const done = translations[id]
-        if (done === null)
+        if (done === null) {
+            if (one && !translating) {
+                delete ones[id]
+                toast("Bu xabar o'zbekcha")
+            }
             return
+        }
         if (done !== undefined) {
             if (originals[id] === undefined)
                 originals[id] = messages.get(i).text
@@ -86,7 +93,10 @@ Page {
         store.send({ "@type": "translateMessageText", chat_id: chatId, message_id: id, to_language_code: "uz" }, (r) => {
             if (r["@type"] !== "formattedText") {
                 delete page.translations[id]
-                if (page.translating) {
+                if (page.ones[id] && !page.translating) {
+                    delete page.ones[id]
+                    page.toast("Tarjima qilib bo'lmadi" + (r.message ? ": " + r.message : ""))
+                } else if (page.translating) {
                     page.translating = false
                     page.untranslate()
                     page.toast("Tarjima qilib bo'lmadi" + (r.message ? ": " + r.message : ""))
@@ -95,6 +105,7 @@ Page {
             }
             if (!r.text.trim()) {       // (Telegram sends nothing back for what is in Uzbek already)
                 page.translations[id] = null
+                page.translateId(id)
                 return
             }
             // (the translator sometimes leaves the original's markup in the words: **, </b>)
@@ -102,7 +113,15 @@ Page {
             page.translateId(id)
         })
     }
+    function untranslateOne(id) {
+        delete ones[id]
+        const i = indexOf(id)
+        if (i >= 0 && originals[id] !== undefined)
+            messages.setProperty(i, "text", originals[id])
+        delete originals[id]
+    }
     function untranslate() {
+        ones = {}
         for (const id in originals) {
             const i = indexOf(Number(id))
             if (i >= 0)
@@ -866,8 +885,16 @@ Page {
             acts.push({ text: "Nusxa olish", glyph: "⧉", run: () => page.copy(m.text) })
         if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
             acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
+        if (m.text && !page.translating)        // this one alone in Uzbek, and back
+            acts.push(page.originals[m.id] !== undefined
+                      ? { text: "Asl nusxasi", glyph: "🌐", run: () => page.untranslateOne(m.id) }
+                      : { text: "Tarjima qilish", glyph: "🌐", run: () => { page.ones[m.id] = true; page.translateId(m.id) } })
+        if (ok && p.can_get_link)
+            acts.push({ text: "Havolani nusxalash", glyph: "🔗", run: () => page.copyLink(m.id) })
         if (ok && p.can_be_forwarded)
-            acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; forwardSheet.show() } })
+            acts.push({ text: "Uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = false; forwardSheet.show() } })
+        if (ok && p.can_be_copied && page.channel)   // (Telegram-iOS's "forward without the author's name")
+            acts.push({ text: "Imzosiz uzatish", glyph: "↪", run: () => { page.forwarding = [m.id]; page.copying = true; forwardSheet.show() } })
         if (ok && p.can_be_pinned)
             acts.push({ text: item.isPinned ? "Qadashni olish" : "Qadash", glyph: "📌",
                         run: () => store.pin(page.chatId, m.id, !item.isPinned) })
@@ -907,6 +934,7 @@ Page {
         }
     }
     property var forwarding: []         // the messages the forward sheet sends
+    property bool copying: false        // and whether as our own (no "forwarded from")
     property var reacting: 0            // the message the menu's reactions go on
 
     function reply(m) {
@@ -921,6 +949,19 @@ Page {
         field.text = m.text
         field.cursorPosition = field.length
         field.forceActiveFocus()
+    }
+
+    function copyLink(id) {
+        store.send({ "@type": "getMessageLink", chat_id: chatId, message_id: id }, (r) => {
+            if (!page)
+                return
+            if (r["@type"] === "messageLink") {
+                page.copy(r.link)
+                page.toast("Havola nusxalandi")
+            } else {
+                page.toast("Havolani olib bo'lmadi")
+            }
+        })
     }
 
     function copy(text) {
@@ -1025,7 +1066,7 @@ Page {
                 delete page.translations[id]
                 delete page.originals[id]
                 messages.setProperty(i, "text", s.text)
-                if (page.translating)
+                if (page.translating || page.ones[id])
                     page.translateId(id)
                 messages.setProperty(i, "kind", s.kind)
                 const p = page.media(content)
@@ -1196,7 +1237,7 @@ Page {
                 readonly property bool translated: page.translating
                 onTranslatedChanged: if (translated) page.translateId(msgId)
                 Component.onCompleted: {
-                    if (page.translating)
+                    if (page.translating || page.ones[msgId])
                         page.translateId(msgId)
                     if ((media || rowKind === "file") && !pic)
                         page.loadPic(msgId)
@@ -2356,7 +2397,7 @@ Page {
     ForwardSheet {
         id: forwardSheet
         store: page.store
-        onPicked: (to, title) => store.forward(to, page.chatId, page.forwarding, (ok) => {
+        onPicked: (to, title) => store.forward(to, page.chatId, page.forwarding, page.copying, (ok) => {
             if (page && ok)
                 page.toast("Uzatildi: " + title)
         })
