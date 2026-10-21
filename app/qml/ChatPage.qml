@@ -19,12 +19,21 @@ Page {
     readonly property bool channel: chat && chat.type["@type"] === "chatTypeSupergroup" && chat.type.is_channel
     // a channel we may write in (its owner, or an admin who posts); the others have its bar instead of the field
     readonly property bool canPost: {
+        if (outside)
+            return false
         if (!channel)
             return true
         const g = (store.seen, store.groups["s" + chat.type.supergroup_id])
         const st = g ? g.status : null
         return !!st && (st["@type"] === "chatMemberStatusCreator" ||
                         (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_post_messages))
+    }
+    // a channel or a group we are not in (opened by a link): «Qo'shilish» in the bar
+    readonly property bool outside: {
+        if (!chat || thread || chat.type["@type"] !== "chatTypeSupergroup")
+            return false
+        const g = (store.seen, store.groups["s" + chat.type.supergroup_id])
+        return !!g && g.status["@type"] === "chatMemberStatusLeft"
     }
     // a post's comments: chatId is then the channel's discussion group and this its thread there
     property var thread: 0
@@ -65,8 +74,8 @@ Page {
     // each message as its row is made (only what is in sight is asked for), back as it was when turned off
     readonly property bool translatable: !!chat && !!chat.is_translatable && !thread
     property bool translating: false
-    property var originals: ({})        // message id -> its own words, while shown translated
-    property var translations: ({})     // message id -> the Uzbek, asked once
+    property var originals: ({})        // message id -> its own words { text, rich }, while shown translated
+    property var translations: ({})     // message id -> the Uzbek { text, rich }, asked once
     property var ones: ({})             // message id -> true: that one alone in Uzbek (its menu's "Tarjima qilish")
     function translateId(id) {
         const i = indexOf(id)
@@ -83,13 +92,14 @@ Page {
         }
         if (done !== undefined) {
             if (originals[id] === undefined)
-                originals[id] = messages.get(i).text
-            messages.setProperty(i, "text", done)
+                originals[id] = { text: messages.get(i).text, rich: messages.get(i).rich }
+            if (done.text !== undefined)
+                put(i, done)
             return
         }
         if (!messages.get(i).text)
             return
-        translations[id] = messages.get(i).text      // (asked: not again while it comes)
+        translations[id] = {}       // (asked: not again while it comes)
         store.send({ "@type": "translateMessageText", chat_id: chatId, message_id: id, to_language_code: "uz" }, (r) => {
             if (r["@type"] !== "formattedText") {
                 delete page.translations[id]
@@ -108,16 +118,22 @@ Page {
                 page.translateId(id)
                 return
             }
-            // (the translator sometimes leaves the original's markup in the words: **, </b>)
-            page.translations[id] = r.text.replace(/<\/?(b|i|u|s|code|pre)>/g, "").replace(/\*\*|__/g, "")
+            // (the translator sometimes leaves the original's markup in the words: **, </b>; where it
+            // has formatting of its own the words stay, its places in them would move)
+            page.translations[id] = r.entities.length ? { text: r.text, rich: store.rich(r, false) }
+                : { text: r.text.replace(/<\/?(b|i|u|s|code|pre)>/g, "").replace(/\*\*|__/g, ""), rich: "" }
             page.translateId(id)
         })
+    }
+    function put(i, words) {
+        messages.setProperty(i, "text", words.text)
+        messages.setProperty(i, "rich", words.rich)
     }
     function untranslateOne(id) {
         delete ones[id]
         const i = indexOf(id)
         if (i >= 0 && originals[id] !== undefined)
-            messages.setProperty(i, "text", originals[id])
+            put(i, originals[id])
         delete originals[id]
     }
     function untranslate() {
@@ -125,7 +141,7 @@ Page {
         for (const id in originals) {
             const i = indexOf(Number(id))
             if (i >= 0)
-                messages.setProperty(i, "text", originals[id])
+                put(i, originals[id])
         }
         originals = {}
     }
@@ -320,10 +336,18 @@ Page {
     readonly property var pictured: ["messagePhoto", "messageVideo", "messageAnimation", "messageSticker", "messageVideoNote",
                                      "messageVoiceNote", "messageAudio", "messageDocument"]
 
-    function shown(content) {
+    // its words and, when they are formatted, Store.rich's parts (a spoiler ░ until tapped: `bare`)
+    property var spoilers: ({})      // message id -> the formatted text with a spoiler in it
+    property var bared: ({})         // message id -> true: its spoilers shown
+    property var unfolded: ({})      // message id -> true: its folding quotes shown whole
+    function shown(content, id) {
         const t = content["@type"]
         const words = store.plain(content)
+        const ft = store.formatted(content)
+        if (store.hasSpoiler(ft))
+            spoilers[id] = ft
         return {
+            rich: store.rich(ft, !!bared[id]),
             text: words !== null ? words : (content.caption ? content.caption.text : ""),
             kind: words !== null || pictured.indexOf(t) >= 0 ? ""
                 : store.kindOf(t)
@@ -546,7 +570,7 @@ Page {
     }
 
     function row(m) {
-        const s = shown(m.content)
+        const s = shown(m.content, m.id)
         const p = media(m.content)
         if (p.file)
             files[m.id] = p.file
@@ -577,7 +601,7 @@ Page {
             quote = { name: "", text: store.preview(r.content) }
         }
         return {
-            msgId: m.id, out: m.is_outgoing, date: m.date, text: s.text, kind: s.kind, said: store.service(m, chat) || "",
+            msgId: m.id, out: m.is_outgoing, date: m.date, text: s.text, rich: s.rich, kind: s.kind, said: store.service(m, chat) || "",
             sender: page.group && !m.is_outgoing && !root ? store.senderName(m.sender_id, false) : "",
             senderKey: JSON.stringify(m.sender_id), sending: !!m.sending_state,
             tint: store.tints[Math.abs(m.sender_id.user_id || m.sender_id.chat_id || 0) % store.tints.length],
@@ -854,6 +878,85 @@ Page {
         })
     }
 
+    // a tap on a link in a message's words (Words' hrefs, Store.rich): a spoiler shows, @name, a
+    // t.me link and a user open their chat (a message link at the message), #tag is looked for in
+    // this chat, /command is sent; the rest goes to the browser
+    function follow(url, id) {
+        if (url === "spoiler") {
+            bared[id] = true
+            const i = indexOf(id)
+            if (i >= 0 && spoilers[id] && originals[id] === undefined)
+                messages.setProperty(i, "rich", store.rich(spoilers[id], true))
+            return
+        }
+        const c = url.charAt(0)
+        if (c === "#" || c === "$") {
+            searching = true
+            findField.text = url
+            return
+        }
+        if (c === "/") {
+            store.sendText(chatId, url, 0, thread)
+            return
+        }
+        if (c === "@") {
+            store.send({ "@type": "searchPublicChat", username: url.slice(1) }, (r) => openChat(r, 0))
+            return
+        }
+        if (url.startsWith("user:")) {
+            store.send({ "@type": "createPrivateChat", user_id: Number(url.slice(5)), force: false }, (r) => openChat(r, 0))
+            return
+        }
+        if (url.startsWith("time:"))
+            return
+        if (!/^(https?:\/\/)?(t\.me|telegram\.me|telegram\.dog)\/|^tg:/i.test(url)) {
+            Qt.openUrlExternally(url)
+            return
+        }
+        store.send({ "@type": "getInternalLinkType", link: url }, (r) => {
+            const t = r["@type"]
+            if (t === "internalLinkTypePublicChat")
+                store.send({ "@type": "searchPublicChat", username: r.chat_username }, (c) => openChat(c, 0))
+            else if (t === "internalLinkTypeMessage")
+                store.send({ "@type": "getMessageLinkInfo", url: url }, (info) => {
+                    if (info["@type"] !== "messageLinkInfo" || !info.chat_id)
+                        return toast("Xabar topilmadi")
+                    openChat({ "@type": "chat", id: info.chat_id }, info.message ? info.message.id : 0)
+                })
+            else if (t === "internalLinkTypeChatInvite")
+                store.send({ "@type": "checkChatInviteLink", invite_link: r.invite_link }, (info) => {
+                    if (info.chat_id)
+                        openChat({ "@type": "chat", id: info.chat_id }, 0)
+                    else
+                        toast(info.title ? "«" + info.title + "» — taklif havolasi" : "Havola ochilmadi")
+                })
+            else
+                Qt.openUrlExternally(url)
+        })
+    }
+    function openChat(r, target) {
+        if (!page)
+            return
+        if (r["@type"] !== "chat")
+            return toast("Topilmadi" + (r.message ? ": " + r.message : ""))
+        if (r.id === chatId && !thread) {
+            if (target)
+                jump(target)
+            return
+        }
+        if (!page.commentsPage)
+            page.commentsPage = Qt.createComponent("ChatPage.qml")
+        page.nav.push(page.commentsPage, target ? { chatId: r.id, target: target } : { chatId: r.id })
+    }
+    function unfold(id) {
+        const u = Object.assign({}, unfolded)
+        if (u[id])
+            delete u[id]
+        else
+            u[id] = true
+        unfolded = u
+    }
+
     function openMenu(item) {
         if (page.kb > 0) {          // the keyboard down first, over the menu's actions it would stay
             field.focus = false
@@ -1062,10 +1165,10 @@ Page {
                 return
             const i = page.indexOf(id)
             if (i >= 0) {
-                const s = page.shown(content)
+                const s = page.shown(content, id)
                 delete page.translations[id]
                 delete page.originals[id]
-                messages.setProperty(i, "text", s.text)
+                page.put(i, s)
                 if (page.translating || page.ones[id])
                     page.translateId(id)
                 messages.setProperty(i, "kind", s.kind)
@@ -1180,6 +1283,7 @@ Page {
                 required property var msgId
                 required property bool out
                 required property string text
+                required property string rich
                 required property string kind
                 required property string sender
                 required property string senderKey
@@ -1566,22 +1670,23 @@ Page {
                                 thumb: item.pic
                             }
                         }
-                        Text {
+                        Words {
                             id: body
                             visible: !item.overlaid
                             x: item.jumbo ? 4 : 12
-                            y: item.media ? picture.y + picture.height + 5 : attach.visible ? attach.y + attach.height + (text ? 4 : 0)
+                            y: item.media ? picture.y + picture.height + 5 : attach.visible ? attach.y + attach.height + (text || parts ? 4 : 0)
                              : quote.visible ? quote.y + quote.height + 4 : bubble.head.visible ? bubble.head.y + bubble.head.height + 2 : item.jumbo ? 0 : 8
-                            height: (attach.visible || item.media) && !text ? 0 : implicitHeight
+                            height: (attach.visible || item.media) && !text && !parts ? 0 : implicitHeight
                             width: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, Math.min(implicitWidth, item.most - 24))
                                  : Math.min(implicitWidth, item.most - 24)
-                            wrapMode: Text.Wrap
-                            textFormat: Text.PlainText
-                            property real last: 0       // the last line's width
-                            onLineLaidOut: (line) => { if (line.isLast) last = line.implicitWidth }
                             text: (item.kind ? "[" + item.kind + "] " : "") + item.text
-                            color: item.out ? Theme.outText : Theme.inText
-                            font.family: Theme.font; font.pixelSize: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
+                            parts: item.kind ? "" : item.rich
+                            ink: item.out ? Theme.outText : Theme.inText
+                            tint: item.out ? Theme.check : Theme.accent
+                            size: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
+                            open: !!page.unfolded[item.msgId]
+                            onLink: (url) => page.follow(url, item.msgId)
+                            onFold: page.unfold(item.msgId)
                         }
                         Flow {          // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
                             id: reactRow    // More than a line holds go on to the next, the time by the last (Telegram-iOS)
@@ -2128,14 +2233,16 @@ Page {
                 Text {
                     id: muteText
                     anchors.centerIn: parent
-                    text: page.muted ? "Ovozni yoqish" : "Ovozni o'chirish"
-                    color: Theme.text
+                    text: page.outside ? "Qo'shilish" : page.muted ? "Ovozni yoqish" : "Ovozni o'chirish"
+                    color: page.outside ? Theme.accent : Theme.text
                     font.family: Theme.font; font.pixelSize: 16; font.weight: Font.Medium
                 }
                 MouseArea {
                     id: muteHit
                     anchors.fill: parent
                     onClicked: {
+                        if (page.outside)
+                            return store.send({ "@type": "joinChat", chat_id: page.chatId }, store.check)
                         const n = Object.assign({}, page.chat.notification_settings)
                         n["@type"] = "chatNotificationSettings"
                         n.use_default_mute_for = false

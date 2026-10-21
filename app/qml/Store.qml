@@ -598,6 +598,107 @@ QtObject {
         }
         return null
     }
+    // a formatted text as Telegram draws it: "" when there is nothing to draw but its words, else
+    // JSON of its parts, [{ q, h }]: q "" for words, "quote", "fold" (a quote that opens), "pre" (code),
+    // h the part as StyledText. Quotes and code stand apart; the rest is bold, italic, links (href:
+    // the url, or "@name", "#tag", "/command", "user:<id>", "time:<s>", "spoiler"). A spoiler is
+    // ░ until `bare`. (TDLib's offsets are in UTF-16, as JavaScript's strings.)
+    readonly property var marks: ({
+        textEntityTypeBold: ["<b>", "</b>"], textEntityTypeItalic: ["<i>", "</i>"],
+        textEntityTypeUnderline: ["<u>", "</u>"], textEntityTypeStrikethrough: ["<s>", "</s>"],
+        textEntityTypeCode: ["<font face='monospace'>", "</font>"]
+    })
+    readonly property var linked: ["textEntityTypeUrl", "textEntityTypeTextUrl", "textEntityTypeMention",
+                                   "textEntityTypeMentionName", "textEntityTypeHashtag", "textEntityTypeCashtag",
+                                   "textEntityTypeBotCommand", "textEntityTypeEmailAddress", "textEntityTypePhoneNumber",
+                                   "textEntityTypeMediaTimestamp", "textEntityTypeBankCardNumber"]
+    readonly property var blocks: ({ textEntityTypeBlockQuote: "quote", textEntityTypeExpandableBlockQuote: "fold",
+                                     textEntityTypePre: "pre", textEntityTypePreCode: "pre" })
+    function hasSpoiler(ft) {
+        return !!ft && (ft.entities || []).some((e) => e.type["@type"] === "textEntityTypeSpoiler")
+    }
+    function rich(ft, bare) {
+        const es = ((ft && ft.entities) || []).filter((e) => {
+            const t = e.type["@type"]
+            return marks[t] || blocks[t] || linked.indexOf(t) >= 0 || t === "textEntityTypeSpoiler"
+        })
+        if (!es.length)
+            return ""
+        const s = ft.text
+        const cuts = [0, s.length]
+        for (const e of es)
+            cuts.push(e.offset, e.offset + e.length)
+        const at = cuts.filter((c, i, all) => all.indexOf(c) === i).sort((a, b) => a - b)
+        const parts = []
+        let cur = null
+        for (let k = 0; k + 1 < at.length; k++) {
+            const a = at[k], b = at[k + 1]
+            const over = es.filter((e) => e.offset <= a && e.offset + e.length >= b)
+            const block = over.find((e) => blocks[e.type["@type"]]) || null
+            if (!cur || cur.block !== block) {
+                cur = { q: block ? blocks[block.type["@type"]] : "", raw: "", h: "", block: block }
+                parts.push(cur)
+            }
+            let piece = s.slice(a, b)
+            cur.raw += piece
+            const spoiled = !bare && over.some((e) => e.type["@type"] === "textEntityTypeSpoiler")
+            if (spoiled)
+                piece = piece.replace(/\S/g, "░")
+            let h = escaped(piece)
+            for (const e of over) {
+                const m = marks[e.type["@type"]]
+                if (m && !(m[0].indexOf("monospace") > 0 && cur.q === "pre"))
+                    h = m[0] + h + m[1]
+            }
+            const link = spoiled ? "spoiler" : over.map((e) => href(e, s)).find((x) => x) || ""
+            if (link)
+                h = "<a href=\"" + link.replace(/"/g, "&quot;") + "\">" + h + "</a>"
+            cur.h += h
+        }
+        // the line breaks around a quote are the quote's edges now: dropped
+        const out = []
+        for (let k = 0; k < parts.length; k++) {
+            const p = parts[k]
+            if (!p.q) {
+                if (k > 0)
+                    p.h = p.h.replace(/^((?:<[^>]+>)*)<br>/, "$1")
+                if (k + 1 < parts.length)
+                    p.h = p.h.replace(/<br>((?:<\/[^>]+>)*)$/, "$1")
+                if (!p.raw.trim())
+                    continue
+            }
+            out.push({ q: p.q, h: p.h })
+        }
+        return JSON.stringify(out)
+    }
+    // words for StyledText: its own marks escaped, line breaks kept, runs of spaces kept
+    function escaped(t) {
+        return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                .replace(/\n/g, "<br>").replace(/ (?= )/g, "&nbsp;")
+    }
+    function href(e, s) {
+        const t = e.type["@type"], w = s.substr(e.offset, e.length)
+        switch (t) {
+        case "textEntityTypeUrl": return /^[a-z][a-z0-9+.-]*:/i.test(w) ? w : "https://" + w
+        case "textEntityTypeTextUrl": return e.type.url
+        case "textEntityTypeEmailAddress": return "mailto:" + w
+        case "textEntityTypePhoneNumber": return "tel:" + w.replace(/[^0-9+]/g, "")
+        case "textEntityTypeMentionName": return "user:" + e.type.user_id
+        case "textEntityTypeMediaTimestamp": return "time:" + e.type.media_timestamp
+        case "textEntityTypeMention":
+        case "textEntityTypeHashtag":
+        case "textEntityTypeCashtag":
+        case "textEntityTypeBotCommand":
+        case "textEntityTypeBankCardNumber": return w
+        }
+        return ""
+    }
+    // the formatted text a message's words are in (its text, or a picture's caption)
+    function formatted(content) {
+        const t = content["@type"]
+        return t === "messageText" ? content.text : content.caption && content.caption.text ? content.caption : null
+    }
+
     // every richTextPlain's string under a page block, in order
     function words_of(v, out) {
         if (Array.isArray(v)) {
