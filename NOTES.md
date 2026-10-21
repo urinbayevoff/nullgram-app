@@ -2,10 +2,10 @@
 
 Owner's decision (2026-10-20 evening): rewrite Tepegram (now Nullgram) the way Telegram-iOS works.
 Its videos of iOS Telegram (iPhone, iOS 26, 384×848 ~30 fps screen recordings) are in
-`~/work/tepegram-ref/videos/` (IMG_0294 chat open, 0295 folders, 0296 tab bar /
+`~/work/nullgram-ref/videos/` (IMG_0294 chat open, 0295 folders, 0296 tab bar /
 liquid glass, 0297 channels + media, 0298 settings, 0299 writing, 0300 context menu edit).
-Telegram-iOS source (GPL-2.0, shallow clone): `~/work/tepegram-ref/ios/`.
-Tools (`~/work/tepegram-ref/tools/`, run with the STT venv's Python for PyAV plus
+Telegram-iOS source (GPL-2.0, shallow clone): `~/work/nullgram-ref/ios/`.
+Tools (`~/work/nullgram-ref/tools/`, run with the STT venv's Python for PyAV plus
 `PYTHONPATH=/usr/lib/python3/dist-packages` for Pillow): `motion.py` (stretches of motion),
 `sheet.py` (frames on one picture), `strip.py` (one band of the screen over frames),
 `edge.py` (a sliding page's edge per frame against model curves).
