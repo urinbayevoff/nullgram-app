@@ -10,10 +10,16 @@ Page {
     property bool byPhone: td.testDc
 
     Column {
-        x: 24; y: 90
+        x: 24; y: 70
         width: parent.width - 48
         spacing: 18
 
+        Image {              // the logo (branding/logo-icon.svg)
+            source: "logo.svg"
+            width: 84; height: 84
+            sourceSize: Qt.size(168, 168)
+            smooth: true
+        }
         Text {
             text: "Nullgram"
             color: Theme.text

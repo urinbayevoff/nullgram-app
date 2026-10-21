@@ -31,7 +31,8 @@ ssh "$DEV" sh -s "$ID" <<'S'
 set -e
 ID=$1 a=$HOME/.local/share/ztos/apps/$1 i=$HOME/.local/share/icons/hicolor/scalable/apps/$1.svg
 mkdir -p "$(dirname "$a")" "$(dirname "$i")" ~/.local/share/applications
-cp ~/nullgram/icon.svg "$i"
+cmp -s ~/nullgram/icon.svg "$i" || {	# a new icon: ztapps makes its glyph anew when it next looks (every 20 s)
+	cp ~/nullgram/icon.svg "$i"; touch ~/.local/share/applications; }
 cat > "$a" <<'E'
 #!/bin/sh
 # one at a time: a second tap brings the running one back (hidden when it was closed: SIGUSR1 shows it).

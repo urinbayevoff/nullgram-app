@@ -1,4 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <!-- a speech bubble with a paper plane cut out of it; white on transparent -->
-  <path fill="#fff" fill-rule="evenodd" d="M36 44h184a12 12 0 0 1 12 12v112a12 12 0 0 1-12 12H112l-48 40v-40H36a12 12 0 0 1-12-12V56a12 12 0 0 1 12-12zM68 110l112-42-20 96-34-24-18 22v-32l46-38-60 32z"/>
+  <!-- one-colour mark (white on transparent): N inside a null ring. The phone's app icon: ztapps turns it into a glyph on the accent square -->
+  <defs>
+    <mask id="cut">
+      <rect width="256" height="256" fill="#fff"/>
+      <path d="M40 40L216 216" stroke="#000" stroke-width="62"/>
+    </mask>
+  </defs>
+  <circle cx="128" cy="128" r="96" fill="none" stroke="#fff" stroke-width="22" mask="url(#cut)"/>
+  <path fill="#fff" d="M84 74h26v108H84zM146 74h26v108h-26z"/>
+  <path fill="#fff" d="M84 74h26l62 108h-26z"/>
 </svg>
