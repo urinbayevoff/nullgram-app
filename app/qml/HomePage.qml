@@ -46,7 +46,8 @@ Page {
             else if (td.devOpen !== "me") {      // an id, or a chat's name ("!" first: even unread -- our own test chats)
                 const force = td.devOpen.startsWith("!"), key = force ? td.devOpen.slice(1) : td.devOpen
                 const c = home.store.chats[key] ||
-                          Object.values(home.store.chats).find((c) => c.title === key)
+                          Object.values(home.store.chats).find((c) => c.title === key) ||
+                          Object.values(home.store.chats).find((c) => c.title.startsWith(key))     // (an emoji at the end comes through ssh changed)
                 if (c && (c.unread_count === 0 || force))
                     home.devPush(c.id)
                 else
@@ -60,10 +61,10 @@ Page {
     function devPush(id) {
         const c = store.chats[id]
         if (c && c.type.is_channel) {           // a channel: what to say goes to its newest post's comments
-            nav.push(devChat, { chatId: id, say: td.devSay })
+            nav.push(devChat, { chatId: id, say: td.devSay, findNow: td.devFind })
             return
         }
-        nav.push(devChat, { chatId: id })
+        nav.push(devChat, { chatId: id, findNow: td.devFind })
         for (const line of td.devSay.split("\n"))
             if (line)
                 store.sendText(id, line, 0)

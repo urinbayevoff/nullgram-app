@@ -28,7 +28,7 @@ Page {
     }
     // a post's comments: chatId is then the channel's discussion group and this its thread there
     property var thread: 0
-    readonly property real foot: input.visible ? input.height : chanBar.height    // what is under the messages
+    readonly property real foot: searching ? findBar.height : input.visible ? input.height : chanBar.height    // what is under the messages
     function isMuted() {
         const n = chat ? chat.notification_settings : null
         return !!n && n.mute_for > 0
@@ -631,11 +631,64 @@ Page {
         if (i >= 0)
             list.positionViewAtIndex(i, ListView.Center)
     }
+    // a message in the middle, lit up a moment: loaded here, else the history around it in place of these
+    function goTo(id) {
+        if (indexOf(id) >= 0) {
+            jump(id)
+            flashId = id
+            unflash.restart()
+        } else {
+            messages.clear()
+            more = true
+            openAt(id, false)
+        }
+    }
+
+    // ---- searching in the chat (Telegram-iOS: the field in the header, ↑ ↓ and "1 of N" under) ----
+    property bool searching: false
+    property var hits: []               // the messages found, newest first
+    property int hit: -1                // the one shown
+    property bool searched: false       // TDLib has answered for what is in the field
+    function find(q) {
+        hits = []
+        hit = -1
+        searched = false
+        if (!q.trim())
+            return
+        store.send({ "@type": "searchChatMessages", chat_id: chatId, topic_id: store.topic(thread), query: q,
+                     sender_id: null, from_message_id: 0, offset: 0, limit: 100, filter: null }, (r) => {
+            if (!page || !searching || q !== findField.text)
+                return
+            if (r["@type"] !== "foundChatMessages")
+                console.warn("nullgram: search", JSON.stringify(r))
+            page.hits = (r.messages || []).map((m) => m.id)
+            page.searched = true
+            if (page.hits.length)
+                page.showHit(0)
+        })
+    }
+    function showHit(k) {
+        hit = k
+        goTo(hits[k])
+    }
+    function stopSearch() {
+        searching = false
+        findField.text = ""
+        findField.focus = false
+        hits = []
+        hit = -1
+    }
 
     // ---- the menu ------------------------------------------------------------
     // testing (NULLGRAM_SAY with a channel): the newest post's comments open and these lines go there
     property string say: ""
+    property string findNow: ""         // testing (NULLGRAM_FIND): search for this once the messages are in
     onReadyChanged: {
+        if (ready && findNow) {
+            searching = true
+            findField.text = findNow
+            findNow = ""
+        }
         if (!ready || !say)
             return
         const t = say
@@ -763,6 +816,10 @@ Page {
         }
         if (menu.open) {
             menu.close()
+            return true
+        }
+        if (searching) {
+            stopSearch()
             return true
         }
         if (replying || editing) {
@@ -1483,6 +1540,11 @@ Page {
                     font.family: Theme.font; font.pixelSize: 13
                 }
             }
+            MouseArea {          // (until there is a page about the chat: its title opens the search)
+                anchors.centerIn: parent
+                width: parent.width - 144; height: parent.height
+                onClicked: { page.searching = true; findField.forceActiveFocus() }
+            }
             Avatar {
                 anchors.right: parent.right; anchors.rightMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
@@ -1491,6 +1553,87 @@ Page {
                 letters: page.chat ? store.letters(page.chat.title) : ""
                 tint: store.tints[Math.abs(page.chatId) % store.tints.length]
                 saved: store.isSaved(page.chat)
+            }
+        }
+
+        Rectangle {          // searching: the field over the header, "Bekor" to leave
+            z: 4
+            visible: page.searching
+            width: parent.width; height: bar.height
+            color: Qt.rgba(Theme.bar.r, Theme.bar.g, Theme.bar.b, 1)     // (the bar itself lets its title through)
+            MouseArea { anchors.fill: parent }
+            Rectangle {
+                x: 12; anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - x - cancelFind.width - 26; height: 36; radius: 18
+                color: Theme.dark ? Qt.rgba(0.46, 0.46, 0.5, 0.24) : Qt.rgba(0.46, 0.46, 0.5, 0.12)
+                Icon {
+                    x: 11; anchors.verticalCenter: parent.verticalCenter
+                    name: "search"; width: 18; height: 18; color: Theme.grey
+                }
+                TextInput {
+                    id: findField
+                    x: 36; anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - x - 12
+                    color: Theme.text
+                    selectionColor: Theme.accent
+                    font.family: Theme.font; font.pixelSize: 16
+                    clip: true
+                    inputMethodHints: Qt.ImhNoPredictiveText
+                    onTextChanged: findLater.restart()
+                    onAccepted: { findLater.stop(); page.find(text); focus = false }
+                    Text {
+                        visible: !findField.text
+                        text: "Chatdan qidirish"
+                        color: Theme.grey
+                        font: findField.font
+                    }
+                }
+                Timer { id: findLater; interval: 400; onTriggered: page.find(findField.text) }
+            }
+            Text {
+                id: cancelFind
+                anchors.right: parent.right; anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Bekor"
+                color: Theme.accent
+                font.family: Theme.font; font.pixelSize: 16
+                MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: page.stopSearch() }
+            }
+        }
+
+        Rectangle {          // searching: under the messages, which one of how many, ↑ older ↓ newer
+            id: findBar
+            z: 2
+            visible: page.searching
+            anchors.bottom: parent.bottom
+            transform: Translate { y: -page.kb }
+            width: parent.width; height: 52
+            color: Theme.bar
+            MouseArea { anchors.fill: parent }
+            Rectangle { width: parent.width; height: 0.5; color: Theme.separator }
+            Row {
+                x: 8; anchors.verticalCenter: parent.verticalCenter
+                Repeater {
+                    model: [{ g: "⌃", d: 1 }, { g: "⌄", d: -1 }]
+                    Text {
+                        required property var modelData
+                        readonly property int to: page.hit + modelData.d
+                        readonly property bool can: to >= 0 && to < page.hits.length
+                        width: 44; height: 44
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        text: modelData.g
+                        color: can ? Theme.accent : Theme.grey
+                        font.family: Theme.font; font.pixelSize: 26; font.weight: Font.DemiBold
+                        MouseArea { anchors.fill: parent; enabled: parent.can; onClicked: page.showHit(parent.to) }
+                    }
+                }
+            }
+            Text {
+                anchors.centerIn: parent
+                text: page.hits.length ? store.count(page.hits.length) + " tadan " + (page.hit + 1)
+                    : page.searched ? "Hech narsa topilmadi" : ""
+                color: Theme.text
+                font.family: Theme.font; font.pixelSize: 15
             }
         }
 
@@ -1529,23 +1672,14 @@ Page {
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 0.5; color: Theme.separator }
             MouseArea {
                 anchors.fill: parent
-                onClicked: {
-                    const id = page.pinned.id
-                    if (page.indexOf(id) >= 0) {
-                        page.jump(id)
-                        page.flashId = id
-                        unflash.restart()
-                    } else {
-                        page.openAt(id, false)
-                    }
-                }
+                onClicked: page.goTo(page.pinned.id)
             }
         }
 
         Rectangle {          // a channel we only read: its sound on or off instead of the field
             id: chanBar
             z: 1
-            visible: !page.canPost
+            visible: !page.canPost && !page.searching
             anchors.bottom: parent.bottom
             width: parent.width
             height: visible ? 60 : 0
@@ -1575,12 +1709,18 @@ Page {
                     }
                 }
             }
+            Icon {               // (as IMG_0297: the search on the bar's right)
+                anchors.right: parent.right; anchors.rightMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                name: "search"; color: Theme.accent
+                MouseArea { anchors.fill: parent; anchors.margins: -10; onClicked: { page.searching = true; findField.forceActiveFocus() } }
+            }
         }
 
         Rectangle {          // the field, with what it answers or edits over it
             id: input
             z: 1
-            visible: page.canPost
+            visible: page.canPost && !page.searching
             anchors.bottom: parent.bottom
             transform: Translate { y: -page.kb }
             width: parent.width
