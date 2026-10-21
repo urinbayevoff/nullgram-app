@@ -614,6 +614,12 @@ QtObject {
                                    "textEntityTypeMediaTimestamp", "textEntityTypeBankCardNumber"]
     readonly property var blocks: ({ textEntityTypeBlockQuote: "quote", textEntityTypeExpandableBlockQuote: "fold",
                                      textEntityTypePre: "pre", textEntityTypePreCode: "pre" })
+    // the entities a sender gives (TDLib finds links, @names, #tags itself): kept when editing
+    readonly property var given: ["textEntityTypeBold", "textEntityTypeItalic", "textEntityTypeUnderline",
+                                  "textEntityTypeStrikethrough", "textEntityTypeSpoiler", "textEntityTypeCode",
+                                  "textEntityTypePre", "textEntityTypePreCode", "textEntityTypeTextUrl",
+                                  "textEntityTypeMentionName", "textEntityTypeBlockQuote",
+                                  "textEntityTypeExpandableBlockQuote", "textEntityTypeCustomEmoji"]
     function hasSpoiler(ft) {
         return !!ft && (ft.entities || []).some((e) => e.type["@type"] === "textEntityTypeSpoiler")
     }
@@ -950,11 +956,12 @@ QtObject {
     }
 
     // silent: the subscribers get it without a sound (a channel's 🔔 off)
-    function sendText(chatId, text, replyTo, thread, silent) {
+    // marks: the formatting given in the field (textEntity's), [] for none
+    function sendText(chatId, text, replyTo, thread, silent, marks) {
         const req = { "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread),
                       options: silent ? { "@type": "messageSendOptions", disable_notification: true } : null,
                       input_message_content: { "@type": "inputMessageText",
-                                               text: { "@type": "formattedText", text: text } } }
+                                               text: { "@type": "formattedText", text: text, entities: marks || [] } } }
         if (replyTo)
             req.reply_to = { "@type": "inputMessageReplyToMessage", message_id: replyTo }
         send(req, check)
@@ -1042,10 +1049,10 @@ QtObject {
             || [0xa9, 0xae, 0x203c, 0x2049, 0x2122, 0x2139, 0x24c2, 0x3030, 0x303d, 0x3297, 0x3299].indexOf(c) >= 0
     }
 
-    function editText(chatId, messageId, text) {
+    function editText(chatId, messageId, text, marks) {
         send({ "@type": "editMessageText", chat_id: chatId, message_id: messageId,
                input_message_content: { "@type": "inputMessageText",
-                                        text: { "@type": "formattedText", text: text } } }, check)
+                                        text: { "@type": "formattedText", text: text, entities: marks || [] } } }, check)
     }
 
     function forward(toChat, fromChat, ids, copy, done) {

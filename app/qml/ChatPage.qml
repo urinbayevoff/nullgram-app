@@ -1052,6 +1052,96 @@ Page {
         field.text = m.text
         field.cursorPosition = field.length
         field.forceActiveFocus()
+        // its formatting comes along (TDLib has the message at hand), unless already typed over
+        store.send({ "@type": "getMessage", chat_id: chatId, message_id: m.id }, (r) => {
+            const ft = r && r.content && store.formatted(r.content)
+            if (!page || !editing || editing.id !== m.id || !ft || field.text !== ft.text)
+                return
+            marks = ft.entities.filter((e) => store.given.indexOf(e.type["@type"]) >= 0)
+            ink.paint(field.textDocument, marks, Theme.accent)
+        })
+    }
+
+    // whether the chosen words are all under a mark of this kind (the field's Format menu)
+    function marked(kind) {
+        const a = field.selectionStart, b = field.selectionEnd
+        return b > a && marks.some((e) => e.type["@type"] === kind && e.offset <= a && e.offset + e.length >= b)
+    }
+    // the Format menu: the chosen words get this mark, or lose it when they have it (url: a link's)
+    function toggleMark(kind, url) {
+        const a = field.selectionStart, b = field.selectionEnd
+        if (b <= a)
+            return
+        const off = marked(kind)
+        const out = []
+        let lo = a, hi = b
+        for (const e of marks) {
+            const x = e.offset, y = e.offset + e.length
+            if (e.type["@type"] !== kind || y < a || x > b) {
+                out.push(e)
+                continue
+            }
+            if (off) {               // what is left of it on either side of the chosen words
+                if (x < a)
+                    out.push({ "@type": "textEntity", offset: x, length: a - x, type: e.type })
+                if (y > b)
+                    out.push({ "@type": "textEntity", offset: b, length: y - b, type: e.type })
+            } else if (!url) {       // one with those it touches (a link keeps its own address)
+                lo = Math.min(lo, x)
+                hi = Math.max(hi, y)
+            } else
+                out.push(e)
+        }
+        if (!off) {
+            const type = { "@type": kind }
+            if (url)
+                type.url = url
+            out.push({ "@type": "textEntity", offset: lo, length: hi - lo, type: type })
+        }
+        marks = out.sort((p, q) => p.offset - q.offset)
+        ink.paint(field.textDocument, marks, Theme.accent)
+    }
+
+    // the field's formatting as TDLib's textEntity's, moved along as its words change: what is
+    // typed inside a mark grows it, at its edges stays out; a custom emoji typed over is dropped
+    property var marks: []
+    property string fieldWas: ""
+    function reMark() {
+        const was = fieldWas, now = field.text
+        fieldWas = now
+        if (!marks.length)
+            return
+        let p = 0
+        while (p < was.length && p < now.length && was[p] === now[p])
+            p++
+        let q = 0
+        while (q < was.length - p && q < now.length - p && was[was.length - 1 - q] === now[now.length - 1 - q])
+            q++
+        const end = was.length - q, d = now.length - was.length
+        const out = []
+        for (const e of marks) {
+            const a = e.offset, b = e.offset + e.length
+            if (e.type["@type"] === "textEntityTypeCustomEmoji" && a < end && b > p)
+                continue
+            const a2 = a < p ? a : a >= end ? a + d : p + Math.max(0, end - p + d)
+            const b2 = b <= p ? b : b >= end ? b + d : p
+            if (b2 > a2)
+                out.push({ "@type": "textEntity", offset: a2, length: b2 - a2, type: e.type })
+        }
+        marks = out
+        ink.paint(field.textDocument, marks, Theme.accent)
+    }
+    // the field's words to send, trimmed, with their marks moved to match
+    function fieldWords() {
+        const t = field.text, lead = t.length - t.replace(/^\s+/, "").length
+        const text = t.trim()
+        const out = []
+        for (const e of marks) {
+            const a = Math.max(0, e.offset - lead), b = Math.min(text.length, e.offset + e.length - lead)
+            if (b > a)
+                out.push({ "@type": "textEntity", offset: a, length: b - a, type: e.type })
+        }
+        return { text: text, marks: out }
     }
 
     function copyLink(id) {
@@ -1686,6 +1776,9 @@ Page {
                             size: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
                             open: !!page.unfolded[item.msgId]
                             onLink: (url) => page.follow(url, item.msgId)
+                            onTouched: (down) => { if (down) { rise.stop(); sink.restart() } else { sink.stop(); rise.restart() } }
+                            onHeld: page.openMenu(item)
+                            onTapped: if (item.media || item.rowKind) page.tapMedia(item)
                             onFold: page.unfold(item.msgId)
                         }
                         Flow {          // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
@@ -2271,6 +2364,111 @@ Page {
             width: parent.width
             height: visible ? compose.height + Math.max(60, field.contentHeight + 38) : 0
             onHeightChanged: if (list.down && !scroll.running) Qt.callLater(list.positionViewAtBeginning)
+            Glass {              // the field's menu (held): as iOS's edit menu, and Telegram's «Format»
+                id: fieldMenu
+                property bool shown: false
+                property bool formats: false        // B I U S … in place of cut/copy/paste
+                property bool linking: false        // the address of a link being written
+                readonly property bool chosen: field.selectionEnd > field.selectionStart
+                visible: shown && (field.activeFocus || link.activeFocus)
+                onVisibleChanged: if (!visible) { formats = false; linking = false; shown = false }
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: -height - 4
+                height: 44
+                width: Math.min(parent.width - 16, (linking ? linkRow.implicitWidth : acts.implicitWidth) + 12)
+                radius: 22
+                z: 3
+                readonly property var plainActs: (chosen ? [
+                    { t: "Kesish", run: () => field.cut() }, { t: "Nusxa", run: () => field.copy() } ] : [])
+                    .concat(field.canPaste ? [{ t: "Joylash", run: () => field.paste() }] : [])
+                    .concat(field.text && !(field.selectionStart === 0 && field.selectionEnd === field.length)
+                            ? [{ t: "Hammasi", keep: true, run: () => field.selectAll() }] : [])
+                    .concat(chosen ? [{ t: "Format ›", keep: true, run: () => fieldMenu.formats = true }] : [])
+                readonly property var formatActs: [
+                    { t: "B", w: Font.Bold, k: "textEntityTypeBold" }, { t: "I", i: true, k: "textEntityTypeItalic" },
+                    { t: "U", u: true, k: "textEntityTypeUnderline" }, { t: "S", s: true, k: "textEntityTypeStrikethrough" },
+                    { t: "Kod", mono: true, k: "textEntityTypeCode" }, { t: "Spoyler", k: "textEntityTypeSpoiler" },
+                    { t: "Iqtibos", k: "textEntityTypeBlockQuote" }, { t: "Havola", k: "textEntityTypeTextUrl" }]
+                onFormatsChanged: menuFlick.contentX = 0
+                Flickable {
+                    id: menuFlick
+                    anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
+                    visible: !fieldMenu.linking
+                    contentWidth: acts.implicitWidth
+                    clip: true
+                    Row {
+                        id: acts
+                        height: 44
+                        Repeater {
+                            model: fieldMenu.formats ? fieldMenu.formatActs : fieldMenu.plainActs
+                            delegate: Item {
+                                required property var modelData
+                                required property int index
+                                readonly property bool on: !!modelData.k && page.marked(modelData.k)
+                                width: word.implicitWidth + 18; height: 44
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: parent.width - 6; height: 32; radius: 16
+                                    color: parent.on ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.18) : "transparent"
+                                }
+                                Text {
+                                    id: word
+                                    anchors.centerIn: parent
+                                    text: modelData.t
+                                    color: parent.on ? Theme.accent : Theme.text
+                                    font.family: modelData.mono ? "monospace" : Theme.font; font.pixelSize: 15
+                                    font.weight: modelData.w || Font.Normal; font.italic: !!modelData.i
+                                    font.underline: !!modelData.u; font.strikeout: !!modelData.s
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        const a = modelData
+                                        if (a.k === "textEntityTypeTextUrl" && !page.marked(a.k)) {
+                                            fieldMenu.linking = true
+                                            link.text = ""
+                                            link.forceActiveFocus()
+                                            return
+                                        }
+                                        if (a.k)
+                                            return page.toggleMark(a.k)
+                                        a.run()
+                                        if (!a.keep)
+                                            fieldMenu.shown = false
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Row {                // Havola: the address, ✓ to put it on the chosen words
+                    id: linkRow
+                    visible: fieldMenu.linking
+                    x: 14; height: 44; spacing: 10
+                    TextInput {
+                        id: link
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 220
+                        color: Theme.text; font.family: Theme.font; font.pixelSize: 15
+                        inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                        Text { visible: !link.text; text: "https://"; color: Theme.grey; font: link.font }
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "✓"; color: Theme.accent; font.pixelSize: 20; font.weight: Font.Bold
+                        MouseArea {
+                            anchors.fill: parent; anchors.margins: -10
+                            onClicked: {
+                                const u = link.text.trim()
+                                if (u)
+                                    page.toggleMark("textEntityTypeTextUrl", /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : "https://" + u)
+                                fieldMenu.linking = false
+                                field.forceActiveFocus()
+                            }
+                        }
+                    }
+                }
+            }
             Glass {              // the clip: pictures and files from the phone
                 x: 8
                 anchors.bottom: parent.bottom; anchors.bottomMargin: 8
@@ -2332,6 +2530,25 @@ Page {
                     wrapMode: TextEdit.Wrap
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16
+                    onTextChanged: page.reMark()
+                    persistentSelection: fieldMenu.linking      // the chosen words, while their link is written
+                    onSelectedTextChanged: if (!selectedText && fieldMenu.shown && fieldMenu.formats) fieldMenu.shown = false
+                    // held: the word under the finger chosen, and the field's menu. Chosen once let go:
+                    // a touch's release puts the cursor and would undo it
+                    TapHandler {
+                        property int at: -1          // where it was held
+                        onLongPressed: at = field.positionAt(point.position.x, point.position.y)
+                        onPressedChanged: if (!pressed && at >= 0) Qt.callLater(() => {
+                            if (field.text && !(at >= field.selectionStart && at < field.selectionEnd)) {
+                                field.cursorPosition = at
+                                field.selectWord()
+                            }
+                            at = -1
+                            fieldMenu.formats = false
+                            fieldMenu.shown = true
+                        })
+                        onTapped: fieldMenu.shown = false
+                    }
                     Text {
                         visible: !field.text && !field.preeditText
                         text: page.channel ? "Xabar tarqatish" : "Xabar"
@@ -2457,11 +2674,11 @@ Page {
                     onClicked: {
                         if (sendButton.mic)
                             return
-                        const t = field.text.trim()
+                        const w = page.fieldWords(), t = w.text
                         if (!t)
                             return
                         if (page.editing) {
-                            store.editText(page.chatId, page.editing.id, t)
+                            store.editText(page.chatId, page.editing.id, t, w.marks)
                             page.editing = null
                             field.text = ""
                             return
@@ -2470,7 +2687,7 @@ Page {
                             page.fresh()
                         const at = field.mapToItem(page, 0, 0)
                         page.flying = { text: t, x: at.x, y: at.y }
-                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0, page.thread, page.silent)
+                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0, page.thread, page.silent, w.marks)
                         page.replying = null
                         field.text = ""
                         list.positionViewAtBeginning()

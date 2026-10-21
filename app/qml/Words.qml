@@ -14,6 +14,11 @@ Item {
     property bool open: false       // a folding quote shown whole
     signal link(string url)
     signal fold()                   // a folding quote tapped
+    // formatted words take the touch themselves (a link would keep a long press from the bubble):
+    // a tap on a link or a folding quote is theirs, the rest is the bubble's as if on it
+    signal touched(bool down)
+    signal held()
+    signal tapped()
 
     readonly property var list: parts ? JSON.parse(parts) : []
     // the last line's width: where the time may go
@@ -34,6 +39,26 @@ Item {
         font.family: Theme.font; font.pixelSize: words.size
     }
 
+    MouseArea {
+        z: 1
+        enabled: words.list.length > 0
+        anchors.fill: parent
+        pressAndHoldInterval: 350
+        onPressed: words.touched(true)
+        onReleased: words.touched(false)
+        onCanceled: words.touched(false)
+        onPressAndHold: words.held()
+        onClicked: (mouse) => {
+            const what = column.item ? column.item.hit(mouse.x, mouse.y) : ""
+            if (what === "fold")
+                words.fold()
+            else if (what)
+                words.link(what)
+            else
+                words.tapped()
+        }
+    }
+
     Loader {
         id: column
         active: words.list.length > 0
@@ -44,6 +69,15 @@ Item {
             readonly property real last: {
                 const it = parts.count ? parts.itemAt(parts.count - 1) : null
                 return it ? it.last : 0
+            }
+            // what is under a tap: a link's address, "fold" for a folding quote, "" for nothing
+            function hit(x, y) {
+                for (let i = 0; i < parts.count; i++) {
+                    const it = parts.itemAt(i)
+                    if (it && y >= it.y && y < it.y + it.height)
+                        return it.hit(x, y - it.y)
+                }
+                return ""
             }
             function measure() {
                 let w = 0
@@ -78,10 +112,9 @@ Item {
                         clip: true
                         Rectangle { visible: part.q !== "pre"; width: 3; height: parent.height; color: words.tint }
                     }
-                    MouseArea {
-                        enabled: part.q === "fold"
-                        anchors.fill: parent
-                        onClicked: words.fold()
+                    function hit(x, y) {
+                        const url = t.linkAt(x - t.x, y - t.y)
+                        return url ? url : q === "fold" ? "fold" : ""
                     }
                     Icon {
                         visible: part.q === "quote" || part.q === "fold" && !part.folds
@@ -105,7 +138,7 @@ Item {
                         elide: Text.ElideRight
                         // links, code and bold as RichText: StyledText underlines every link (Telegram
                         // does not), knows no font face and its bold is 700 (Telegram-iOS's is semibold).
-                        // RichText tells no line's width: the last part's comes from a StyledText twin.
+                        // RichText tells no line's width: the last part's comes from a TextEdit twin.
                         readonly property bool fancy: /<a |monospace|<b>/.test(part.modelData.h)
                         textFormat: fancy ? Text.RichText : Text.StyledText
                         property real laid: 0
@@ -119,20 +152,20 @@ Item {
                         linkColor: words.tint
                         font.family: part.q === "pre" ? "monospace" : Theme.font
                         font.pixelSize: part.q === "pre" ? words.size - 2 : words.size
-                        onLinkActivated: (url) => words.link(url)
                     }
                     Loader {
                         id: twin
                         active: t.fancy && part.index === words.list.length - 1     // (RichText's lineCount is not told)
-                        sourceComponent: Text {
+                        // the same RichText in a TextEdit, which tells where its last letter ends
+                        sourceComponent: TextEdit {
                             visible: false
+                            readOnly: true
                             width: t.width
                             wrapMode: t.wrapMode
-                            textFormat: Text.StyledText
+                            textFormat: TextEdit.RichText
                             font: t.font
-                            text: part.modelData.h.replace(/<\/?a[^>]*>/g, "")
-                            property real laid: 0
-                            onLineLaidOut: (line) => { if (line.isLast) laid = line.implicitWidth }
+                            text: t.text
+                            readonly property real laid: length, contentWidth, positionToRectangle(length).x
                         }
                     }
 

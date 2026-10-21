@@ -25,7 +25,7 @@ import threading
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
 from PySide6.QtCore import Property, QFileSystemWatcher, QObject, QRectF, QSocketNotifier, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QSyntaxHighlighter, QTextCharFormat, QImage, QImageReader, QPainter, QPainterPath
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -313,6 +313,65 @@ VIDEO = dict.fromkeys([".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"], "video"
 AUDIO = dict.fromkeys([".mp3", ".ogg", ".oga", ".opus", ".m4a", ".flac", ".wav", ".aac"], "audio")
 
 
+class Ink(QObject):
+	"""The field's formatting drawn in the field (Telegram-iOS shows a message's bold, links, code
+	as it is written or edited). The marks are TDLib textEntity's, kept by ChatPage as the words
+	change; here they are only painted, a QSyntaxHighlighter on the TextEdit's document. Offsets
+	are UTF-16, as the document's own positions."""
+
+	class _Paint(QSyntaxHighlighter):
+		def __init__(self, doc):
+			super().__init__(doc)
+			self.marks, self.accent = [], QColor("#0088ff")
+
+		def highlightBlock(self, _text):
+			block = self.currentBlock()
+			at, n = block.position(), block.length() - 1
+			here = [(k, max(o, at) - at, min(o + l, at + n) - at) for k, o, l in self.marks
+			        if max(o, at) < min(o + l, at + n)]
+			# cut where any mark starts or ends; each piece gets every mark over it (bold and italic)
+			cuts = sorted({0, n} | {x for _, a, b in here for x in (a, b)})
+			for a, b in zip(cuts, cuts[1:]):
+				f = QTextCharFormat()
+				for kind, x, y in here:
+					if x <= a and y >= b:
+						self._mark(f, kind)
+				self.setFormat(a, b - a, f)
+
+		def _mark(self, f, kind):
+			if kind == "textEntityTypeBold":
+				f.setFontWeight(QFont.DemiBold)
+			elif kind == "textEntityTypeItalic":
+				f.setFontItalic(True)
+			elif kind == "textEntityTypeUnderline":
+				f.setFontUnderline(True)
+			elif kind == "textEntityTypeStrikethrough":
+				f.setFontStrikeOut(True)
+			elif kind in ("textEntityTypeCode", "textEntityTypePre", "textEntityTypePreCode"):
+				f.setFontFamilies(["monospace"])
+			elif kind in ("textEntityTypeTextUrl", "textEntityTypeMentionName"):
+				f.setForeground(self.accent)
+			elif kind == "textEntityTypeSpoiler":
+				f.setBackground(QColor(128, 128, 128, 90))
+			elif kind in ("textEntityTypeBlockQuote", "textEntityTypeExpandableBlockQuote"):
+				f.setBackground(QColor(self.accent.red(), self.accent.green(), self.accent.blue(), 36))
+
+	def __init__(self):
+		super().__init__()
+		self._paints = {}
+
+	@Slot(QObject, "QVariantList", QColor)
+	def paint(self, quick, marks, accent):
+		doc = quick.textDocument()
+		p = self._paints.get(id(doc))
+		if p is None:
+			p = self._paints[id(doc)] = Ink._Paint(doc)
+			doc.destroyed.connect(lambda *_, k=id(doc): self._paints.pop(k, None))
+		p.marks = [(m["type"]["@type"], int(m["offset"]), int(m["length"])) for m in marks]
+		p.accent = accent
+		p.rehighlight()
+
+
 class Thumb(QQuickImageProvider):
 	"""image://thumb/<path>: a still of a video file (a frame half a second in, by ffmpeg, kept in
 	the cache), or the picture itself; for the attach sheet. On Qt's image-loading threads."""
@@ -493,6 +552,8 @@ def main():
 	view.rootContext().setContextProperty("td", td)
 	osk = Osk()
 	view.rootContext().setContextProperty("osk", osk)
+	ink = Ink()
+	view.rootContext().setContextProperty("ink", ink)
 	view.engine().addImageProvider("round", Round())
 	view.engine().addImageProvider("wall", Wall())
 	view.engine().addImageProvider("bubble", Bubble())
