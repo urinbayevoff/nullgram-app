@@ -168,7 +168,7 @@ SubPage {
         if (c["@type"] === "messagePhoto") {
             const big = c.photo.sizes[c.photo.sizes.length - 1]
             shown = { file: big.photo, name: "photo_" + m.id + ".jpg" }
-            v.show(cell, big.height / big.width, src)
+            v.show(cell, big.height / big.width, src, "", m.id)
             store.fetch(big.photo, 32, (path) => { if (page && v.open) v.better(path) })
             return
         }
@@ -181,11 +181,12 @@ SubPage {
         store.fetch(video.video, 32, (path) => {
             cell.loading = false
             if (page && page.nav.topPage === page)
-                v.show(cell, aspect, src, path)
+                v.show(cell, aspect, src, path, m.id)
         })
     }
     function save() {
-        const f = shown
+        const s = overlay.viewer.current
+        const f = s && s.file ? { file: s.file, name: s.name } : shown
         if (f)
             store.fetch(f.file, 32, (path) => {
                 const to = td.save(path, f.name)
@@ -214,6 +215,12 @@ SubPage {
             }
             PhotoViewer {
                 id: viewer
+                store: page.store
+                chatId: page.chatId
+                locate: (id) => {           // a paged-to one's cell, when it is in the grid
+                    const i = page.found.findIndex((m) => m.id === id)
+                    return i >= 0 && grid.visible ? cells.itemAt(i) : null
+                }
                 onSave: page.save()
             }
             Rectangle {
@@ -397,6 +404,7 @@ SubPage {
             spacing: 1.5
             readonly property real side: (width - 2 * spacing) / 3
             Repeater {
+                id: cells
                 model: grid.visible ? page.found : []
                 Item {
                     id: cell

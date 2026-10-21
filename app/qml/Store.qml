@@ -654,7 +654,57 @@ QtObject {
         w.push(done)
         _waiters[f.id] = w
         if (w.length === 1)
-            send({ "@type": "downloadFile", file_id: f.id, priority: priority, offset: 0, limit: 0, synchronous: false })
+            send({ "@type": "downloadFile", file_id: f.id, priority: priority, offset: 0, limit: 0, synchronous: false },
+                 (r) => { if (r["@type"] === "file") file(r) })      // (here already: no updateFile comes)
+    }
+
+    // ---- a gallery's slides: PhotoViewer pages through a chat's pictures and videos ----
+    // one message as the viewer shows it: its shape, a picture for now (a small size or the
+    // video's still, else Telegram's tiny preview), the biggest size, the video, what ↓ saves
+    function slide(m) {
+        const c = m.content
+        if (c["@type"] === "messagePhoto" && c.photo.sizes.length) {
+            const sizes = c.photo.sizes, big = sizes[sizes.length - 1]
+            let small = big
+            for (const z of sizes)
+                if (z.width >= 320) {
+                    small = z
+                    break
+                }
+            return { id: m.id, aspect: big.height / big.width, small: small.photo, big: big.photo, video: null,
+                     mini: c.photo.minithumbnail ? c.photo.minithumbnail.data : "",
+                     file: big.photo, name: "photo_" + m.id + ".jpg" }
+        }
+        if (c["@type"] === "messageVideo") {
+            const v = c.video
+            return { id: m.id, aspect: v.width ? v.height / v.width : 9 / 16,
+                     small: v.thumbnail && v.thumbnail.format["@type"] === "thumbnailFormatJpeg" ? v.thumbnail.file : null,
+                     big: null, video: v.video, mini: v.minithumbnail ? v.minithumbnail.data : "",
+                     file: v.video, name: v.file_name || "video_" + m.id + ".mp4" }
+        }
+        return null
+    }
+    // the slides either side of message `id`: done(older, newer), null at an end
+    function besides(chatId, thread, id, done) {
+        send({ "@type": "searchChatMessages", chat_id: chatId, topic_id: topic(thread), query: "", sender_id: null,
+               from_message_id: id, offset: -2, limit: 5, filter: { "@type": "searchMessagesFilterPhotoAndVideo" } }, (r) => {
+            let older = null, newer = null
+            for (const m of r.messages || []) {
+                const s = slide(m)
+                if (s && m.id < id && (!older || m.id > older.id))
+                    older = s
+                if (s && m.id > id && (!newer || m.id < newer.id))
+                    newer = s
+            }
+            done(older, newer)
+        })
+    }
+    // into ~/Downloads, brought down first: done(what to tell)
+    function saveFile(f, name, done) {
+        fetch(f, 32, (path) => {
+            const to = td.save(path, name)
+            done(to ? "Saqlandi: Downloads/" + to.split("/").pop() : "Saqlab bo'lmadi")
+        })
     }
 
     function file(f) {

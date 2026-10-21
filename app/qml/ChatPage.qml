@@ -274,7 +274,7 @@ Page {
     function view(item) {
         const src = item.pic ? "image://pic/0/" + Math.round(item.pw) + "/" + item.pic
                   : item.mini ? "image://pic/0/" + Math.round(item.pw) + "/mini/" + item.mini : ""
-        viewer.show(item.picFace, item.aspect, src)
+        viewer.show(item.picFace, item.aspect, src, "", item.msgId)
         const f = bigFiles[item.msgId]
         if (f)
             store.fetch(f, 32, (path) => { if (page) viewer.better(path) })
@@ -342,7 +342,8 @@ Page {
         if (k === "video" || k === "gif" || (k === "file" && mime.startsWith("video/"))) {
             const src = item.pic ? "image://pic/0/" + Math.round(item.pw) + "/" + item.pic
                       : item.mini ? "image://pic/0/" + Math.round(item.pw) + "/mini/" + item.mini : ""
-            viewer.show(item.media ? item.picFace : item.face, item.media ? item.aspect : 9 / 16, src, item.path)
+            viewer.show(item.media ? item.picFace : item.face, item.media ? item.aspect : 9 / 16, src, item.path,
+                        k === "video" ? item.msgId : 0)
             viewing = item.msgId
         } else if (k === "round") {
             roundId = roundId === item.msgId ? 0 : item.msgId
@@ -1905,7 +1906,21 @@ Page {
     Component { id: infoPage; ChatInfoPage {} }
     PhotoViewer {
         id: viewer
-        onSave: if (page.viewing) page.save(page.viewing)
+        store: page.store
+        chatId: page.chatId
+        thread: page.thread
+        locate: (id) => {           // a paged-to message's picture, when its bubble is on the page
+            const i = page.indexOf(id)
+            const it = i >= 0 ? list.itemAtIndex(i) : null
+            return it && it.media ? it.picFace : null
+        }
+        onSave: {
+            const s = viewer.current
+            if (s && s.file)
+                store.saveFile(s.file, s.name, (text) => { if (page) page.toast(text) })
+            else if (page.viewing)
+                page.save(page.viewing)
+        }
     }
 
     ForwardSheet {

@@ -4,6 +4,8 @@
 // keeps its full-screen size and moves by x, y and scale. A video plays in the same frame
 // (with its sound), a tap shows or hides its controls; ↓ saves either to ~/Downloads. A wide
 // video turns a quarter round to fill the screen (the phone held sideways), its controls with it.
+// Given the chat (store, chatId) and the message, a sideways drag pages to the chat's next or
+// earlier picture or video, as Telegram's gallery does: the newer ones to the right, 20 pt apart.
 import QtQuick
 import QtMultimedia
 
@@ -23,6 +25,18 @@ Item {
     property bool sideways: false       // the controls laid out for it (once the turn is over)
     readonly property bool wide: video !== "" && aspect < 0.9
     signal save()
+    signal paged(var id)                // another message's picture shows now
+
+    // paging: the chat, the slide shown (Store.slide; only its id for the first one) and its neighbours
+    property var store: null
+    property var chatId: 0
+    property var thread: 0
+    property var locate: null           // id -> the Item showing that message's picture now, or null
+    property var current: null
+    property var older: null
+    property var newer: null
+    property bool waiting: false        // a paged-to video coming down
+    readonly property real gap: 20
     property var curve: [0.0744, 0.0298, 0.1307, 0.7931, 0.3680, 0.9301, 0.4409, 0.9722, 0.4273, 0.9999, 1.0, 1.0]
 
     // the picture fitted to the screen
@@ -33,10 +47,13 @@ Item {
     // turned: how much bigger it then is (its height across the screen's width)
     readonly property real turnScale: Math.min(width / fitH, height / fitW)
 
-    function show(item, aspect, source, video) {
+    function show(item, aspect, source, video, id) {
         if (open)
             return
         from = item
+        current = id && store && chatId ? { id: id } : null
+        older = newer = null
+        neighbours()
         viewer.video = video || ""
         chrome = true
         if (viewer.video) {
@@ -52,6 +69,7 @@ Item {
         frame.scale = r.s
         frame.x = r.x
         frame.y = r.y
+        frame.opacity = 1
         back.opacity = 0
         turned = sideways = false
         turn.rotation = 0
@@ -70,14 +88,20 @@ Item {
         coming.stop()
         settle.stop()
         turning.stop()
+        paging.stop()
+        side.visible = false
         turned = sideways = false
         const r = start()
         backX.to = r.x; backY.to = r.y; backScale.to = r.s; backBack.to = 0
+        fade.to = from ? 1 : 0
         going.restart()
     }
 
     // where the bubble's picture is: the fitted picture scaled to cover it, centred on it
+    // (a paged-to one not on the page: it shrinks a little where it is and fades)
     function start() {
+        if (!from)
+            return { s: 0.8, x: frame.x + fitW * 0.1, y: frame.y + fitH * 0.1 }
         const at = from.mapToItem(viewer, 0, 0)
         const s = Math.max(from.width / fitW, from.height / fitH)
         return { s: s, x: at.x + from.width / 2 - fitW * s / 2, y: at.y + from.height / 2 - fitH * s / 2 }
@@ -131,6 +155,27 @@ Item {
                 visible: viewer.video !== ""
             }
         }
+        Item {              // the neighbour coming in while paging
+            id: side
+            visible: false
+            property var slide: null
+            property string src: ""
+            readonly property real w: slide ? Math.min(viewer.width, viewer.height / slide.aspect) : 1
+            width: w; height: slide ? w * slide.aspect : 1
+            y: (viewer.height - height) / 2
+            Image {
+                anchors.fill: parent
+                source: side.src
+                asynchronous: true
+                sourceSize: Qt.size(side.width, side.height)
+            }
+        }
+    }
+    Ring {                  // a paged-to video coming down
+        anchors.centerIn: parent
+        visible: viewer.waiting && viewer.open
+        value: 0.3
+        cross: false
     }
     MediaPlayer {
         id: player
@@ -142,6 +187,8 @@ Item {
 
     TapHandler {
         onTapped: {
+            if (paging.running)
+                return
             if (!viewer.video) {
                 viewer.close()
                 return
@@ -163,22 +210,127 @@ Item {
         target: frame
         enabled: frame.scale > 1.02 && !viewer.turned
     }
-    DragHandler {           // not zoomed: drag it away to close
+    DragHandler {           // not zoomed: up or down drags it away to close, sideways pages
         id: away
         target: null
-        enabled: frame.scale <= 1.02 && !viewer.turned
-        yAxis.enabled: true
-        xAxis.enabled: false
+        enabled: frame.scale <= 1.02 && !viewer.turned && !paging.running
+        property int axis: 0            // 1 sideways, 2 up or down: the first clear move decides
+        property point moved            // (translation is back at 0 by the time it lets go)
         onTranslationChanged: if (active && viewer.open) {
-            frame.y = viewer.fitY + translation.y
-            back.opacity = 1 - Math.min(0.7, Math.abs(translation.y) / 400)
+            const t = translation
+            moved = t
+            if (!axis) {
+                if (Math.abs(t.x) < 10 && Math.abs(t.y) < 10)
+                    return
+                axis = viewer.current && Math.abs(t.x) > Math.abs(t.y) ? 1 : 2
+            }
+            if (axis === 1) {
+                viewer.slideBy(t.x)
+                return
+            }
+            frame.y = viewer.fitY + t.y
+            back.opacity = 1 - Math.min(0.7, Math.abs(t.y) / 400)
         }
         onActiveChanged: if (!active && viewer.open) {
-            if (Math.abs(translation.y) > 90 || Math.abs(centroid.velocity.y) > 900)
+            const was = axis
+            axis = 0
+            if (was === 1)
+                viewer.slideEnd(moved.x, centroid.velocity.x)
+            else if (was === 2 && (Math.abs(moved.y) > 90 || Math.abs(centroid.velocity.y) > 900))
                 viewer.close()
             else
                 viewer.recentre()
         }
+    }
+
+    // ---- paging ----
+    function neighbours() {
+        const s = current
+        if (!s)
+            return
+        store.besides(chatId, thread, s.id, (o, n) => {
+            if (current !== s)
+                return
+            older = o
+            newer = n
+            for (const x of [o, n])
+                if (x)
+                    prepare(x)
+        })
+    }
+    // its picture for now: Telegram's tiny one at once, its small size once here
+    function prepare(s) {
+        const w = Math.round(Math.min(width, height / s.aspect))
+        s.src = s.mini ? "image://pic/0/" + w + "/mini/" + s.mini : ""
+        if (s.small)
+            store.fetch(s.small, 1, (path) => {
+                s.src = "image://pic/0/" + w + "/" + path
+                if (side.slide === s)
+                    side.src = s.src
+            })
+    }
+    function sideAt(dir) {       // where the neighbour stands (dir 1: the newer, on the right)
+        return (width - side.w) / 2 + dir * (width + gap)
+    }
+    function slideBy(dx) {
+        const s = dx < 0 ? newer : older
+        frame.x = fitX + (s ? dx : dx / 3)          // nothing there: it gives a little
+        if (!s) {
+            side.visible = false
+            return
+        }
+        if (side.slide !== s) {
+            side.slide = s
+            side.src = s.src
+        }
+        side.x = sideAt(dx < 0 ? 1 : -1) + dx
+        side.visible = true
+    }
+    function slideEnd(dx, vx) {
+        const dir = dx < 0 ? 1 : -1
+        const s = dir > 0 ? newer : older
+        const go = s && (Math.abs(dx) > width / 3 || (Math.abs(vx) > 400 && vx * dx > 0))
+        pageX.to = go ? fitX - dir * (width + gap) : fitX
+        sideX.to = sideAt(go ? 0 : dir)
+        paging.landing = go ? s : null
+        paging.restart()
+    }
+    // the neighbour now the one shown: its bigger picture, or its video, comes in
+    function land(s) {
+        if (from)
+            from.opacity = 1
+        player.stop()
+        player.source = ""
+        video = ""
+        big.source = ""
+        turned = sideways = false
+        current = s
+        aspect = s.aspect
+        source = side.src
+        frame.x = fitX
+        frame.y = fitY
+        side.visible = false
+        side.slide = null
+        from = locate ? locate(s.id) : null
+        if (from)
+            from.opacity = 0
+        chrome = true
+        waiting = !!s.video
+        if (s.big)
+            store.fetch(s.big, 32, (path) => { if (current === s && open) big.source = "file://" + path })
+        if (s.video)
+            store.fetch(s.video, 32, (path) => {
+                if (current !== s || !open)
+                    return
+                waiting = false
+                video = path
+                player.source = "file://" + path
+                player.play()
+                hide.restart()
+            })
+        older = newer = null
+        neighbours()
+        paged(s.id)
     }
 
     function recentre() {
@@ -302,6 +454,7 @@ Item {
         YAnimator { id: backY; target: frame; duration: 300; easing.type: Easing.OutCubic }
         ScaleAnimator { id: backScale; target: frame; duration: 300; easing.type: Easing.OutCubic }
         OpacityAnimator { id: backBack; target: back; duration: 250 }
+        OpacityAnimator { id: fade; target: frame; duration: 250 }
         RotationAnimator { target: turn; to: 0; duration: 300; easing.type: Easing.OutCubic }
         ScaleAnimator { target: turn; to: 1; duration: 300; easing.type: Easing.OutCubic }
         onFinished: {
@@ -312,6 +465,23 @@ Item {
             big.source = ""
             viewer.video = ""
             player.source = ""
+            viewer.current = viewer.older = viewer.newer = null
+            viewer.waiting = false
+            side.slide = null
+            frame.opacity = 1
+        }
+    }
+    ParallelAnimation {     // to the neighbour, or back (a paging scroll view's settle)
+        id: paging
+        property var landing: null
+        XAnimator { id: pageX; target: frame; duration: 300; easing.type: Easing.OutCubic }
+        XAnimator { id: sideX; target: side; duration: 300; easing.type: Easing.OutCubic }
+        onFinished: {
+            if (landing && viewer.open)
+                viewer.land(landing)
+            else
+                side.visible = false
+            landing = null
         }
     }
     ParallelAnimation {
