@@ -122,6 +122,10 @@ Rectangle {
     property real _target: 1
     function slide(p, ms, curve) {
         motion.stop()
+        // the page goes: its keyboard with it, not after it is gone (IMG_0086; Qt's text input
+        // tells the shell only when the field is destroyed)
+        if (p === 0 && osk.h > 0)
+            osk.hide()
         for (const a of [toTop, toUnder, toDim]) {
             a.duration = ms
             a.easing.bezierCurve = curve

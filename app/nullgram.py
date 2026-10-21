@@ -262,12 +262,8 @@ class Osk(QObject):
 		run = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 		self._path = os.path.join(run, "ztos-osk")
 		self._h, self._ms = 0, 200
-		try:	# (a FIFO: without O_NONBLOCK, no shell reading it would hang us here)
-			fd = os.open(os.path.join(run, "ztmetro.ctl"), os.O_WRONLY | os.O_NONBLOCK)
-			os.write(fd, b"osk room ztos.uz.omonullos.nullgram\n")
-			os.close(fd)
-		except OSError:
-			pass
+		self._ctl = os.path.join(run, "ztmetro.ctl")
+		self._tell(b"osk room ztos.uz.omonullos.nullgram\n")
 		# the file is replaced (a rename), so it is its directory that is watched
 		self._watch = QFileSystemWatcher([run])
 		self._watch.directoryChanged.connect(self._read)
@@ -283,6 +279,20 @@ class Osk(QObject):
 		if (h, ms) != (self._h, self._ms):
 			self._h, self._ms = h, ms
 			self.changed.emit()
+
+	def _tell(self, line):
+		try:	# (a FIFO: without O_NONBLOCK, no shell reading it would hang us here)
+			fd = os.open(self._ctl, os.O_WRONLY | os.O_NONBLOCK)
+			os.write(fd, line)
+			os.close(fd)
+		except OSError:
+			pass
+
+	@Slot()
+	def hide(self):
+		"""Down now: a page leaving with its field. Qt's text input tells the shell only once
+		the field is gone, at the end of the page's slide."""
+		self._tell(b"osk hide\n")
 
 	h = Property(int, lambda self: self._h, notify=changed)
 	ms = Property(int, lambda self: self._ms, notify=changed)
