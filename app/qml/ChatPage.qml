@@ -17,6 +17,24 @@ Page {
     readonly property bool group: chat && (chat.type["@type"] === "chatTypeBasicGroup" ||
                                            (chat.type["@type"] === "chatTypeSupergroup" && !chat.type.is_channel))
     readonly property bool channel: chat && chat.type["@type"] === "chatTypeSupergroup" && chat.type.is_channel
+    // a channel we may write in (its owner, or an admin who posts); the others have its bar instead of the field
+    readonly property bool canPost: {
+        if (!channel)
+            return true
+        const g = (store.seen, store.groups["s" + chat.type.supergroup_id])
+        const st = g ? g.status : null
+        return !!st && (st["@type"] === "chatMemberStatusCreator" ||
+                        (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_post_messages))
+    }
+    // a post's comments: chatId is then the channel's discussion group and this its thread there
+    property var thread: 0
+    readonly property real foot: input.visible ? input.height : chanBar.height    // what is under the messages
+    function isMuted() {
+        const n = chat ? chat.notification_settings : null
+        return !!n && n.mute_for > 0
+    }
+    property bool muted: isMuted()
+    property string threadOf: ""        // the channel's name, under "Izohlar"
     ready: false
     property bool loading: false
     property bool more: true
@@ -57,6 +75,8 @@ Page {
     // the newest pinned message, in a bar under the header (a tap goes to it)
     property var pinned: null           // { id, text }
     function loadPinned() {
+        if (thread)         // (the discussion group's pinned message is not the post's)
+            return
         store.send({ "@type": "getChatPinnedMessage", chat_id: chatId }, (m) => {
             if (page)
                 page.pinned = m["@type"] === "message" ? { id: m.id, text: store.preview(m.content) } : null
@@ -81,7 +101,7 @@ Page {
         readTo = chat ? chat.last_read_inbox_message_id : 0
         if (target)
             openAt(target, false)
-        else if (chat && chat.unread_count > 0 && readTo)
+        else if (chat && chat.unread_count > 0 && readTo && !thread)
             openAt(readTo, true)
         else
             fresh()
@@ -101,7 +121,7 @@ Page {
             page.ready = true
             Qt.callLater(page.seen)
             Qt.callLater(page.nearTop)          // a screen not yet full: more at once
-        })
+        }, null, thread)
     }
 
     // as Telegram opens a chat with unread messages: around the last one read, the first unread
@@ -434,6 +454,9 @@ Page {
             tint: store.tints[Math.abs(m.sender_id.user_id || m.sender_id.chat_id || 0) % store.tints.length],
             time: Qt.formatTime(new Date(m.date * 1000), "HH:mm"),
             views: m.interaction_info ? m.interaction_info.view_count : 0,
+            // a channel post with a discussion group: its comments (-1: none can be left)
+            comments: m.is_channel_post && page.channel && m.interaction_info && m.interaction_info.reply_info
+                      ? m.interaction_info.reply_info.reply_count : -1,
             edited: m.edit_date > 0,
             replyId: r ? r.message_id : 0,
             quoteName: quote ? quote.name : "", quoteText: quote ? quote.text : (r ? "..." : ""),
@@ -505,7 +528,7 @@ Page {
     function seen() {
         if (!ready || !messages.count)
             return
-        let i = list.indexAt(list.width / 2, list.contentY + list.height - input.height - 4)
+        let i = list.indexAt(list.width / 2, list.contentY + list.height - page.foot - 4)
         if (i < 0)
             i = list.atYBeginning ? 0 : -1
         away = gap || i > 2
@@ -577,7 +600,7 @@ Page {
             page.loading = false
             if (!failed)
                 Qt.callLater(page.nearTop)      // still near the top (a short page, a fast flick): the next ones
-        })
+        }, null, thread)
     }
 
     // older messages while the top of the list is still 15 messages away, not only once it is reached:
@@ -598,6 +621,23 @@ Page {
     }
 
     // ---- the menu ------------------------------------------------------------
+    // a post's comments, in a page of their own over this one (the discussion group's thread)
+    property Component commentsPage: null
+    function openComments(id) {
+        store.send({ "@type": "getMessageThread", chat_id: chatId, message_id: id }, (r) => {
+            if (!page)
+                return
+            if (r["@type"] !== "messageThreadInfo") {
+                console.warn("nullgram: getMessageThread", r.code, r.message)
+                return
+            }
+            if (!page.commentsPage)
+                page.commentsPage = Qt.createComponent("ChatPage.qml")
+            page.nav.push(page.commentsPage, { chatId: r.chat_id, thread: r.message_thread_id,
+                                               threadOf: page.chat ? page.chat.title : "" })
+        })
+    }
+
     function openMenu(item) {
         const m = { id: item.msgId, text: item.text, kind: item.kind, out: item.out,
                     name: item.out ? "Siz" : item.sender || (chat ? chat.title : "") }
@@ -709,6 +749,8 @@ Page {
         function onMessage(m) {
             if (m.chat_id !== page.chatId || page.gap)      // (in a gap it comes with the newer ones)
                 return
+            if (page.thread && !(m.topic_id && m.topic_id.message_thread_id === page.thread))
+                return
             for (let i = 0; i < Math.min(messages.count, 20); i++)
                 if (messages.get(i).msgId === m.id)
                     return
@@ -734,8 +776,10 @@ Page {
             seenLater.restart()
         }
         function onChatChanged(chatId) {
-            if (chatId === page.chatId)
+            if (chatId === page.chatId) {
                 page.unread = page.chat.unread_count
+                page.muted = page.isMuted()
+            }
         }
         function onMessageChanged(chatId, oldId, m) {
             if (chatId !== page.chatId)
@@ -785,6 +829,8 @@ Page {
                 return
             messages.setProperty(i, "reacts", JSON.stringify(store.reactions(info)))
             messages.setProperty(i, "views", info ? info.view_count : 0)
+            if (page.channel && info && info.reply_info)
+                messages.setProperty(i, "comments", info.reply_info.reply_count)
         }
         function onFileUpdated(f) {
             const ids = page.fileMsgs[f.id]
@@ -847,7 +893,7 @@ Page {
             cacheBuffer: 800
             maximumFlickVelocity: 6000
             flickDeceleration: 2200
-            header: Item { width: 1; height: input.height + 10 }
+            header: Item { width: 1; height: page.foot + 10 }
             footer: Item { width: 1; height: bar.height + pinBar.height + 8 + osk.h }   // (gone up: the oldest clear the header)
             onContentYChanged: {                             // (index 0 is the newest, at the bottom)
                 page.nearTop()
@@ -897,6 +943,7 @@ Page {
                 required property string fwd        // forwarded: who from
                 required property string reacts     // its reactions, JSON: [{ e, n, mine }]
                 required property bool isPinned
+                required property int comments      // a channel post's comments (-1: none)
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -977,17 +1024,19 @@ Page {
                         x: item.out ? item.width - width - 8 - 6 : 8 + 6
                         // the time goes in the last line's corner when it fits there, else under it
                         readonly property real stampRoom: stamp.implicitWidth + 8
+                        readonly property real tail: item.comments >= 0 && !item.bare ? 42 : 0     // the comments row
+
                         readonly property bool stampUnder: !item.overlaid && body.last + stampRoom > (item.media ? width : item.most) - 24
                         width: item.jumbo ? Math.max(body.implicitWidth, stamp.implicitWidth + 12) + 8
                              : item.bare ? item.pw : item.media ? item.pw + 6
                              : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
                                                             attach.visible ? attach.width : 0, fwdText.visible ? fwdText.implicitWidth : 0,
                                                             item.reacted ? reactRow.implicitWidth + stamp.implicitWidth + 6 : 0,
-                                                            stampUnder ? stamp.implicitWidth : body.last + stampRoom) + 24)
-                        height: item.jumbo ? body.y + body.height + 26
+                                                            stampUnder ? stamp.implicitWidth : body.last + stampRoom, tail ? 196 : 0) + 24)
+                        height: tail + (item.jumbo ? body.y + body.height + 26
                               : item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
                               : item.reacted ? reactRow.y + reactRow.height + 6
-                              : body.y + body.height + (stampUnder ? 24 : 8)
+                              : body.y + body.height + (stampUnder ? 24 : 8))
 
                         Rectangle {     // while the stretched picture loads
                             anchors.fill: parent
@@ -1240,12 +1289,47 @@ Page {
                         Text {
                             id: stamp
                             anchors.right: parent.right; anchors.rightMargin: item.overlaid || item.jumbo ? (item.bare ? 8 : 12) : 10
-                            anchors.bottom: parent.bottom; anchors.bottomMargin: item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: bubble.tail + (item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6)
                             textFormat: Text.StyledText
                             text: (item.isPinned ? "📌 " : "") + (item.views ? item.views + " · " : "") + (item.edited ? "tahrirlandi " : "") + item.time +
                                   (item.out ? (item.sending ? " ◷" : " <font color='" + (item.overlaid || item.jumbo ? "white" : Theme.check) + "'>✓</font>") : "")
                             color: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
                             font.family: Theme.font; font.pixelSize: 12
+                        }
+                        Item {          // a channel post's comments: how many, a tap opens them
+                            visible: bubble.tail > 0
+                            anchors.bottom: parent.bottom
+                            width: parent.width; height: bubble.tail
+                            Rectangle { x: 12; width: parent.width - 24; height: 1; color: Theme.fieldBorder }
+                            Icon {
+                                x: 10; anchors.verticalCenter: parent.verticalCenter
+                                name: "chats"; color: Theme.accent; scale: 0.8
+                            }
+                            Text {
+                                x: 40; anchors.verticalCenter: parent.verticalCenter
+                                text: item.comments > 0 ? item.comments + " ta izoh" : "Izoh qoldirish"
+                                color: Theme.accent
+                                font.family: Theme.font; font.pixelSize: 15
+                            }
+                            Text {
+                                anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
+                                text: "›"
+                                color: Theme.accent
+                                font.family: Theme.font; font.pixelSize: 22
+                            }
+                            MouseArea { anchors.fill: parent; onClicked: page.openComments(item.msgId) }
+                        }
+                    }
+                    Rectangle {         // beside a channel's post: send it on (as Telegram has it)
+                        visible: page.channel && !item.out
+                        x: bubble.x + bubble.width + 8
+                        y: bubble.y + bubble.height - bubble.tail - height
+                        width: 32; height: 32; radius: 16
+                        color: Qt.rgba(0, 0, 0, 0.22)
+                        Icon { anchors.centerIn: parent; name: "forward"; color: "white"; scale: 0.72 }
+                        MouseArea {
+                            anchors.fill: parent; anchors.margins: -6
+                            onClicked: { page.forwarding = [item.msgId]; forwardSheet.show() }
                         }
                     }
                 }
@@ -1269,7 +1353,7 @@ Page {
             id: toNewest
             z: 2
             anchors.right: parent.right; anchors.rightMargin: 10
-            y: parent.height - page.kb - input.height - height - 12
+            y: parent.height - page.kb - page.foot - height - 12
             width: 40; height: 40; radius: 20
             color: Theme.menu
             border.color: Theme.fieldBorder; border.width: 1
@@ -1332,7 +1416,7 @@ Page {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     elide: Text.ElideRight
-                    text: store.title(page.chat)
+                    text: page.thread ? "Izohlar" : store.title(page.chat)
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
                 }
@@ -1340,7 +1424,7 @@ Page {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     elide: Text.ElideRight
-                    text: store.seen, page.now, store.status(page.chat, page.now)     // (re-read when either changes)
+                    text: page.thread ? page.threadOf : (store.seen, page.now, store.status(page.chat, page.now))     // (re-read when either changes)
                     visible: text !== ""
                     color: text === "onlayn" || text.endsWith("...") ? Theme.accent : Theme.grey
                     font.family: Theme.font; font.pixelSize: 13
@@ -1405,10 +1489,45 @@ Page {
             }
         }
 
+        Rectangle {          // a channel we only read: its sound on or off instead of the field
+            id: chanBar
+            z: 1
+            visible: !page.canPost
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: visible ? 60 : 0
+            color: Theme.bar
+            Rectangle {
+                anchors.centerIn: parent
+                width: muteText.implicitWidth + 64; height: 40; radius: 20
+                color: Theme.field
+                border.color: Theme.fieldBorder; border.width: 1
+                Icon { x: 18; anchors.verticalCenter: parent.verticalCenter; name: "bell"; color: Theme.accent; scale: 0.8 }
+                Text {
+                    id: muteText
+                    x: 46; anchors.verticalCenter: parent.verticalCenter
+                    text: page.muted ? "Ovozni yoqish" : "Ovozni o'chirish"
+                    color: Theme.accent
+                    font.family: Theme.font; font.pixelSize: 16; font.weight: Font.DemiBold
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        const n = Object.assign({}, page.chat.notification_settings)
+                        n["@type"] = "chatNotificationSettings"
+                        n.use_default_mute_for = false
+                        n.mute_for = page.muted ? 0 : 2147483647
+                        page.muted = !page.muted        // at once; TDLib's update says the same
+                        store.send({ "@type": "setChatNotificationSettings", chat_id: page.chatId, notification_settings: n }, store.check)
+                    }
+                }
+            }
+        }
+
         Rectangle {          // the field, with what it answers or edits over it
             id: input
             z: 1
-            visible: !page.channel
+            visible: page.canPost
             anchors.bottom: parent.bottom
             transform: Translate { y: -page.kb }
             width: parent.width
@@ -1562,7 +1681,7 @@ Page {
                             page.fresh()
                         const at = field.mapToItem(page, 0, 0)
                         page.flying = { text: t, x: at.x, y: at.y }
-                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0)
+                        store.sendText(page.chatId, t, page.replying ? page.replying.id : 0, page.thread)
                         page.replying = null
                         field.text = ""
                         list.positionViewAtBeginning()
@@ -1591,7 +1710,7 @@ Page {
         onSend: (picked, asFiles) => {
             if (page.gap)
                 page.fresh()
-            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles)
+            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles, page.thread)
             field.text = ""
             page.replying = null
             list.down = true
@@ -1674,7 +1793,7 @@ Page {
         const v = td.voice(at)
         if (page.gap)
             page.fresh()
-        store.sendVoice(chatId, at, v.duration, v.waveform, replying ? replying.id : 0)
+        store.sendVoice(chatId, at, v.duration, v.waveform, replying ? replying.id : 0, thread)
         replying = null
         list.down = true
         list.positionViewAtBeginning()

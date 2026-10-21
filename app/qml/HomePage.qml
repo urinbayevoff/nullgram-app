@@ -24,7 +24,7 @@ Page {
         }
     }
 
-    // NULLGRAM_OPEN=<chat id>, its name or "me" (testing from the PC): that chat at once,
+    // NULLGRAM_OPEN=<chat id>, its name, "me" or "channel" (testing from the PC): that chat at once,
     // unless it has unread messages (opening it would read them)
     Timer {
         running: td.devOpen !== ""
@@ -33,6 +33,16 @@ Page {
             const me = home.store.me
             if (td.devOpen === "me" && me)
                 home.store.chatWith(me.id, (id) => home.devPush(id))
+            else if (td.devOpen === "channel") {     // a channel with comments, all read
+                const c = Object.values(home.store.chats).find((c) => {
+                    const g = c.type["@type"] === "chatTypeSupergroup" && c.type.is_channel ? home.store.groups["s" + c.type.supergroup_id] : null
+                    return g && g.has_linked_chat && c.unread_count === 0
+                })
+                if (c)
+                    home.devPush(c.id)
+                else
+                    console.warn("nullgram: NULLGRAM_OPEN channel: none read with comments")
+            }
             else if (td.devOpen !== "me") {      // an id, or a chat's name
                 const c = home.store.chats[td.devOpen] ||
                           Object.values(home.store.chats).find((c) => c.title === td.devOpen)

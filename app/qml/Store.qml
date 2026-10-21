@@ -653,11 +653,14 @@ QtObject {
     // ---- messages --------------------------------------------------------------
     // up to `limit` messages before `from` (0: the newest), newest first. TDLib answers
     // from its database at once and may give fewer: ask again until there are enough.
-    // `failed`: TDLib said no (offline, too many asks) -- that is not the beginning of the chat
-    function history(chatId, from, limit, done, got) {
+    // `failed`: TDLib said no (offline, too many asks) -- that is not the beginning of the chat.
+    // `thread`: only a post's comments (its thread in the discussion group)
+    function history(chatId, from, limit, done, got, thread) {
         got = got || []
-        send({ "@type": "getChatHistory", chat_id: chatId, from_message_id: from, offset: 0,
-               limit: limit - got.length, only_local: false }, (r) => {
+        send(thread ? { "@type": "getMessageThreadHistory", chat_id: chatId, message_id: thread, from_message_id: from,
+                        offset: 0, limit: limit - got.length }
+                    : { "@type": "getChatHistory", chat_id: chatId, from_message_id: from, offset: 0,
+                        limit: limit - got.length, only_local: false }, (r) => {
             if (r["@type"] === "error") {
                 console.warn("nullgram: getChatHistory", chatId, from, r.code, r.message)
                 done(got, true)
@@ -668,12 +671,17 @@ QtObject {
             if (msgs.length === 0 || got.length >= limit)
                 done(got, false)
             else
-                store.history(chatId, msgs[msgs.length - 1].id, limit, done, got)
+                store.history(chatId, msgs[msgs.length - 1].id, limit, done, got, thread)
         })
     }
 
-    function sendText(chatId, text, replyTo) {
-        const req = { "@type": "sendMessage", chat_id: chatId,
+    // a message in a post's comments goes to its thread
+    function topic(thread) {
+        return thread ? { "@type": "messageTopicThread", message_thread_id: thread } : null
+    }
+
+    function sendText(chatId, text, replyTo, thread) {
+        const req = { "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread),
                       input_message_content: { "@type": "inputMessageText",
                                                text: { "@type": "formattedText", text: text } } }
         if (replyTo)
@@ -683,7 +691,7 @@ QtObject {
 
     // files from the phone (td.recent's): pictures and videos together as an album when there are
     // several, the rest one by one; the field's words go under the first. asFiles: all as documents
-    function sendFiles(chatId, files, caption, replyTo, asFiles) {
+    function sendFiles(chatId, files, caption, replyTo, asFiles, thread) {
         const text = { "@type": "formattedText", text: caption || "" }
         // (TDLib 1.8.68: the file and its sizes go in an inputPhoto, inputVideo... of their own)
         const contents = files.map((f, k) => {
@@ -710,17 +718,17 @@ QtObject {
         const rest = contents.filter((c) => album.indexOf(c) < 0)
         if (album.length > 1) {
             for (let k = 0; k < album.length; k += 10)
-                send({ "@type": "sendMessageAlbum", chat_id: chatId, reply_to: k ? null : reply,
+                send({ "@type": "sendMessageAlbum", chat_id: chatId, topic_id: topic(thread), reply_to: k ? null : reply,
                        input_message_contents: album.slice(k, k + 10) }, check)
         } else {
             rest.unshift(...album)
         }
         for (const c of rest)
-            send({ "@type": "sendMessage", chat_id: chatId, reply_to: reply, input_message_content: c }, check)
+            send({ "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread), reply_to: reply, input_message_content: c }, check)
     }
 
-    function sendVoice(chatId, path, duration, waveform, replyTo) {
-        send({ "@type": "sendMessage", chat_id: chatId,
+    function sendVoice(chatId, path, duration, waveform, replyTo, thread) {
+        send({ "@type": "sendMessage", chat_id: chatId, topic_id: topic(thread),
                reply_to: replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null,
                input_message_content: { "@type": "inputMessageVoiceNote",
                                         voice_note: { "@type": "inputVoiceNote", voice_note: { "@type": "inputFileLocal", path: path },
