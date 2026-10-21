@@ -181,7 +181,10 @@ SubPage {
             y: 146
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
-            text: page.saved ? "" : (store.seen, store.status(page.chat, page.now))
+            // (a group's full info counts its members better than the group itself)
+            text: page.saved ? "" : page.full && page.full.member_count && !store.activity(page.chat)
+                  ? store.count(page.full.member_count) + (page.chat.type.is_channel ? " obunachi" : " a'zo")
+                  : (store.seen, store.status(page.chat, page.now))
             color: text === "onlayn" ? Theme.accent : Theme.grey
             font.family: Theme.font; font.pixelSize: 15
         }

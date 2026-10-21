@@ -24,7 +24,7 @@ Page {
         }
     }
 
-    // NULLGRAM_OPEN=<chat id>, its name, "me" or "channel" (testing from the PC): that chat at once,
+    // NULLGRAM_OPEN=<chat id>, its name, "me", "channel" or "private" (testing from the PC): that chat at once,
     // unless it has unread messages (opening it would read them)
     Timer {
         running: td.devOpen !== ""
@@ -42,6 +42,17 @@ Page {
                     home.devPush(c.id)
                 else
                     console.warn("nullgram: NULLGRAM_OPEN channel: none read with comments")
+            }
+            else if (td.devOpen === "private") {     // a person's chat, all read (not a bot, not ourselves)
+                const c = home.store.chatList.count && Array.from({ length: home.store.chatList.count },
+                    (_, i) => home.store.chats[home.store.chatList.get(i).chatId]).find((c) => {
+                    const u = c && c.type["@type"] === "chatTypePrivate" ? home.store.users[c.type.user_id] : null
+                    return u && u.type["@type"] === "userTypeRegular" && c.unread_count === 0 && !home.store.isSaved(c)
+                })
+                if (c)
+                    home.devPush(c.id)
+                else
+                    console.warn("nullgram: NULLGRAM_OPEN private: none read")
             }
             else if (td.devOpen !== "me") {      // an id, or a chat's name ("!" first: even unread -- our own test chats)
                 const force = td.devOpen.startsWith("!"), key = force ? td.devOpen.slice(1) : td.devOpen
