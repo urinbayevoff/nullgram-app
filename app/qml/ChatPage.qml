@@ -31,6 +31,12 @@ Page {
 
     ListModel { id: messages }       // newest first: the list runs bottom to top
 
+    // the keyboard's height over us: the messages and the field go up with it, the header stays
+    // (the shell moves the keyboard in that time and curve, and leaves the window where it is).
+    // Moved, not resized: a list laid out again each frame could not keep up with it.
+    property real kb: osk.h
+    Behavior on kb { NumberAnimation { duration: osk.ms; easing.type: Easing.OutExpo } }
+
     property var flying: null       // the text just sent and where it was: its bubble starts there
     property bool lift: false
     NumberAnimation {
@@ -834,6 +840,7 @@ Page {
         ListView {
             id: list
             anchors.fill: parent
+            transform: Translate { y: -page.kb }
             z: page.lift ? 2 : 0        // over the field while a sent bubble leaves it (the header stays over all)
             model: messages
             verticalLayoutDirection: ListView.BottomToTop
@@ -841,7 +848,7 @@ Page {
             maximumFlickVelocity: 6000
             flickDeceleration: 2200
             header: Item { width: 1; height: input.height + 10 }
-            footer: Item { width: 1; height: bar.height + pinBar.height + 8 }
+            footer: Item { width: 1; height: bar.height + pinBar.height + 8 + osk.h }   // (gone up: the oldest clear the header)
             onContentYChanged: {                             // (index 0 is the newest, at the bottom)
                 page.nearTop()
                 page.nearBottom()
@@ -1262,7 +1269,7 @@ Page {
             id: toNewest
             z: 2
             anchors.right: parent.right; anchors.rightMargin: 10
-            y: parent.height - input.height - height - 12
+            y: parent.height - page.kb - input.height - height - 12
             width: 40; height: 40; radius: 20
             color: Theme.menu
             border.color: Theme.fieldBorder; border.width: 1
@@ -1403,6 +1410,7 @@ Page {
             z: 1
             visible: !page.channel
             anchors.bottom: parent.bottom
+            transform: Translate { y: -page.kb }
             width: parent.width
             height: visible ? compose.height + Math.max(52, field.contentHeight + 26) : 0
             color: Theme.bar

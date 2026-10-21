@@ -34,10 +34,12 @@ mkdir -p "$(dirname "$a")" "$(dirname "$i")" ~/.local/share/applications
 cp ~/nullgram/icon.svg "$i"
 cat > "$a" <<'E'
 #!/bin/sh
-# one at a time: a second tap brings the running one back (hidden when it was closed: SIGUSR1 shows it)
+# one at a time: a second tap brings the running one back (hidden when it was closed: SIGUSR1 shows it).
+# The app runs on its own and this ends at once: while what the shell started lives, a tap only waits
+# for its window (and a hidden Nullgram has none), it would not run this again.
 pid=$(pgrep -f '[n]ullgram/nullgram.py') && { kill -USR1 $pid; exit 0; }
 export QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1	# started by the shell, Qt would log to journald
-exec python3 "$HOME/nullgram/nullgram.py" "$@" > /tmp/nullgram.log 2>&1
+setsid -f python3 "$HOME/nullgram/nullgram.py" "$@" > /tmp/nullgram.log 2>&1 < /dev/null
 E
 chmod 755 "$a"
 cat > ~/.local/share/applications/$ID.desktop <<E

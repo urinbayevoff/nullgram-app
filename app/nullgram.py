@@ -24,7 +24,7 @@ import threading
 # letters over 64 px are drawn from outlines every time, uncached; at the S10's 4x that is all of them
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
-from PySide6.QtCore import Property, QObject, QRectF, QSocketNotifier, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QFileSystemWatcher, QObject, QRectF, QSocketNotifier, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader, QPainter, QPainterPath
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
@@ -69,6 +69,7 @@ class Td(QObject):
 			key = json.load(f)
 		self._id, self._hash = int(key["id"]), key["hash"]
 		os.makedirs(DATA, exist_ok=True)
+		self.closed = threading.Event()
 
 	def start(self):
 		"""Once QML listens: a signal sent before anyone is connected is lost, and with it
@@ -81,7 +82,15 @@ class Td(QObject):
 		while True:
 			r = self.lib.td_receive(10.0)
 			if r:
-				self.received.emit(r.decode())
+				r = r.decode()
+				if '"authorizationStateClosed"' in r:
+					self.closed.set()
+				self.received.emit(r)
+
+	def close(self, wait: float):
+		"""TDLib asked to close (its database written out), waiting for it at most `wait` seconds."""
+		self.send(json.dumps({"@type": "close"}))
+		self.closed.wait(wait)
 
 	@Slot(str)
 	def send(self, request: str):
@@ -193,6 +202,7 @@ class Td(QObject):
 		as GVariant text, so nothing in the message is read as anything else."""
 		def text(v):
 			return "'" + v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ") + "'"
+		print("nullgram: banner from", title, flush=True)	# (not what it says)
 		try:
 			subprocess.Popen(["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
 			                  "--object-path", "/org/freedesktop/Notifications",
@@ -235,6 +245,45 @@ class Td(QObject):
 	# and send it these lines, one message each (only with NULLGRAM_OPEN)
 	devSay = Property(str, lambda self: os.environ.get("NULLGRAM_SAY", ""), constant=True)
 	testPhone = Property(str, lambda self: os.environ.get("NULLGRAM_TEST_PHONE", "") if TEST else "", constant=True)
+
+
+class Osk(QObject):
+	"""The shell's keyboard, for moving the chat over it ourselves (iOS: the header stays, the
+	messages and the field go up with the keyboard). The shell is told so ("osk room") and no
+	longer lifts the whole window; it writes $XDG_RUNTIME_DIR/ztos-osk ("shown|hidden H MS")
+	whenever the keyboard comes or goes. `h`: how much of the window it covers, in points;
+	`ms`: how long it takes to get there (an ease-out, QML's Easing.OutExpo)."""
+	changed = Signal()
+
+	def __init__(self):
+		super().__init__()
+		run = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+		self._path = os.path.join(run, "ztos-osk")
+		self._h, self._ms = 0, 200
+		try:	# (a FIFO: without O_NONBLOCK, no shell reading it would hang us here)
+			fd = os.open(os.path.join(run, "ztmetro.ctl"), os.O_WRONLY | os.O_NONBLOCK)
+			os.write(fd, b"osk room ztos.uz.omonullos.nullgram\n")
+			os.close(fd)
+		except OSError:
+			pass
+		# the file is replaced (a rename), so it is its directory that is watched
+		self._watch = QFileSystemWatcher([run])
+		self._watch.directoryChanged.connect(self._read)
+		self._read()
+
+	def _read(self, *_):
+		try:
+			with open(self._path) as f:
+				state, h, ms = f.read().split()
+			h, ms = (int(h) if state == "shown" else 0), int(ms)
+		except (OSError, ValueError):
+			return
+		if (h, ms) != (self._h, self._ms):
+			self._h, self._ms = h, ms
+			self.changed.emit()
+
+	h = Property(int, lambda self: self._h, notify=changed)
+	ms = Property(int, lambda self: self._ms, notify=changed)
 
 
 TILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ztos-live", "uz.omonullos.nullgram")
@@ -426,6 +475,8 @@ def main():
 	view = QQuickView()
 	view.setColor("black")
 	view.rootContext().setContextProperty("td", td)
+	osk = Osk()
+	view.rootContext().setContextProperty("osk", osk)
 	view.engine().addImageProvider("round", Round())
 	view.engine().addImageProvider("wall", Wall())
 	view.engine().addImageProvider("bubble", Bubble())
@@ -446,27 +497,33 @@ def main():
 	rd.setblocking(False)
 	wr.setblocking(False)
 	signal.set_wakeup_fd(wr.fileno())
-	got = []
-	signal.signal(signal.SIGUSR1, lambda n, f: got.append(n))
-	signal.signal(signal.SIGTERM, lambda n, f: got.append(n))
+	# (the handlers do nothing: the C side writes each signal's number to the socket, and that is
+	# what is read here; Python's own handler may not have run yet when Qt calls back)
+	signal.signal(signal.SIGUSR1, lambda n, f: None)
+	signal.signal(signal.SIGTERM, lambda n, f: None)
 
 	def woken():
 		try:
-			rd.recv(64)
+			got = rd.recv(64)
 		except OSError:
-			pass
-		while got:
-			if got.pop(0) == signal.SIGTERM:
-				app.quit()
-			else:
-				view.showFullScreen()
-				view.raise_()
-				view.requestActivate()
+			return
+		if signal.SIGTERM in got:
+			app.quit()
+		elif signal.SIGUSR1 in got:
+			print("nullgram: shown again", flush=True)
+			view.showFullScreen()
+			view.raise_()
+			view.requestActivate()
 	notifier = QSocketNotifier(rd.fileno(), QSocketNotifier.Read)
 	notifier.activated.connect(woken)
 	code = app.exec()
 	tile_clear()
-	sys.exit(code)
+	# Out at once, not after seconds of Qt and Python taking themselves apart: a tap meanwhile
+	# would find it still there and only signal it.
+	td.close(1.5)
+	sys.stdout.flush()
+	sys.stderr.flush()
+	os._exit(code)
 
 
 if __name__ == "__main__":
