@@ -29,8 +29,46 @@ Page {
         return !!st && (st["@type"] === "chatMemberStatusCreator" ||
                         (st["@type"] === "chatMemberStatusAdministrator" && st.rights.can_post_messages))
     }
+    // what a group's members may send: by its own rights, and ours where its admins restricted us; null
+    // when it is not a group, or we own it or are its admin (anything). `some`: anything but text
+    readonly property var rights: {
+        if (!chat || channel || outside)
+            return null
+        const t = chat.type["@type"]
+        if (t !== "chatTypeBasicGroup" && t !== "chatTypeSupergroup")
+            return null
+        const g = (store.seen, store.groups[t === "chatTypeBasicGroup" ? "b" + chat.type.basic_group_id : "s" + chat.type.supergroup_id])
+        const k = g && g.status ? g.status["@type"] : ""
+        if (!k || k === "chatMemberStatusCreator" || k === "chatMemberStatusAdministrator")
+            return null
+        const mine = k === "chatMemberStatusRestricted" ? g.status.permissions : null
+        const may = (key, old) => [mine, chat.permissions].every((p) => !p || (p[key] !== undefined ? p[key] : old ? p[old] : true) !== false)
+        const r = { mine: !!mine, text: may("can_send_basic_messages", "can_send_messages"), photos: may("can_send_photos"),
+                    videos: may("can_send_videos"), voice: may("can_send_voice_notes"), round: may("can_send_video_notes"),
+                    files: may("can_send_documents"), music: may("can_send_audios"), other: may("can_send_other_messages") }
+        r.some = r.photos || r.videos || r.voice || r.round || r.files || r.music || r.other
+        return r
+    }
+    // text barred, something else not (pictures, files...): the field stays, locked (Telegram-iOS's «Text not
+    // allowed»); a tap on it says what may be sent, 📎 and the mic send what they may
+    readonly property bool textBarred: !!rights && !rights.text && rights.some && !editing
+    readonly property bool canAttach: !rights || rights.photos || rights.videos || rights.files || rights.music
+    readonly property bool canVoice: !rights || rights.voice
+    // as Telegram-iOS words it (restrictedSendingContentsText): "only allow to send photos, videos and files"
+    readonly property string allowedText: {
+        const r = rights
+        if (!r)
+            return ""
+        const kinds = [[r.text, "matnli xabar"], [r.photos, "rasm"], [r.videos, "video"], [r.voice, "ovozli xabar"],
+                       [r.round, "video xabar"], [r.files, "fayl"], [r.music, "musiqa"], [r.other, "stiker/GIF"]]
+                      .filter((k) => k[0]).map((k) => k[1])
+        if (!kinds.length)
+            return "Bu guruhda xabar yuborib bo'lmaydi"
+        const list = kinds.length > 1 ? kinds.slice(0, -1).join(", ") + " va " + kinds[kinds.length - 1] : kinds[0]
+        return (r.mine ? "Adminlar sizga faqat " : "Bu guruh adminlari faqat ") + list + " yuborishga ruxsat bergan"
+    }
     // why we may not write here — a group whose admins let only themselves (or have barred us), a deleted
-    // account — said in the bar instead of the field; "" when we may
+    // account — said in the bar instead of the field; "" when we may (text or anything else)
     readonly property string barred: {
         if (!chat || channel || outside)
             return ""
@@ -47,10 +85,10 @@ Page {
             return ""
         if (k === "chatMemberStatusBanned" || k === "chatMemberStatusLeft")
             return "Siz bu guruh a'zosi emassiz"
-        const mine = k === "chatMemberStatusRestricted"
-        const may = mine ? g.status.permissions : chat.permissions
-        const text = may ? (may.can_send_basic_messages !== undefined ? may.can_send_basic_messages : may.can_send_messages) : true
-        return text !== false ? "" : mine ? "Adminlar sizga bu yerda yozishni cheklagan" : "Bu guruhda faqat adminlar yoza oladi"
+        const r = rights
+        if (!r || r.text || r.some)
+            return ""
+        return r.mine ? "Adminlar sizga bu yerda yozishni cheklagan" : "Bu guruhda faqat adminlar yoza oladi"
     }
     // a channel or a group we are not in (opened by a link): «Qo'shilish» in the bar
     readonly property bool outside: {
@@ -3212,12 +3250,14 @@ Page {
                 anchors.bottom: parent.bottom; anchors.bottomMargin: 8
                 width: 44; height: 44
                 visible: !page.editing
-                opacity: clipHit.pressed ? 0.7 : 1
+                opacity: !page.canAttach ? 0.4 : clipHit.pressed ? 0.7 : 1
                 Icon { anchors.centerIn: parent; width: 26; height: 26; name: "clip"; color: Theme.text }
                 MouseArea {
                     id: clipHit
                     anchors.fill: parent
                     onClicked: {
+                        if (!page.canAttach)        // (none of what it sends may be sent here)
+                            return page.toast(page.allowedText)
                         Qt.inputMethod.hide()
                         sheet.show()
                     }
@@ -3269,6 +3309,8 @@ Page {
                     color: Theme.text
                     font.family: Theme.font; font.pixelSize: 16
                     onTextChanged: page.reMark()
+                    readOnly: page.textBarred
+                    activeFocusOnPress: !page.textBarred
                     persistentSelection: fieldMenu.linking      // the chosen words, while their link is written
                     onSelectedTextChanged: if (!selectedText && fieldMenu.shown && fieldMenu.formats) fieldMenu.shown = false
                     // held: the word under the finger chosen, and the field's menu. Chosen once let go:
@@ -3288,11 +3330,25 @@ Page {
                         onTapped: fieldMenu.shown = false
                     }
                     Text {
-                        visible: !field.text && !field.preeditText
+                        visible: !field.text && !field.preeditText && !page.textBarred
                         text: page.channel ? "Xabar tarqatish" : "Xabar"
                         color: Theme.grey
                         font: field.font
                     }
+                }
+                Row {            // text barred: 🔒 and why, in the field's middle (Telegram-iOS's «Text not allowed»)
+                    visible: page.textBarred
+                    x: (parent.width - width) / 2
+                    y: compose.height + (parent.height - compose.height - height) / 2
+                    spacing: 6
+                    Icon { anchors.verticalCenter: parent.verticalCenter; width: 16; height: 16; name: "lock"; color: Theme.grey }
+                    Text { text: "Matn yozib bo'lmaydi"; color: Theme.grey; font: field.font }
+                }
+                MouseArea {      // and a tap on it says what may be sent instead
+                    visible: page.textBarred
+                    y: compose.height
+                    width: parent.width; height: parent.height - compose.height
+                    onClicked: page.toast(page.allowedText)
                 }
                 Item {           // ⏱: how long messages stay (Telegram-iOS's auto-delete button), the time when set
                     id: clock
@@ -3383,6 +3439,7 @@ Page {
                 width: 44; height: 44; radius: 22
                 color: mic ? (page.recording ? Theme.danger : "transparent") : field.text.trim() ? Theme.accent : Theme.mutedBadge
                 scale: page.recording ? 1.6 : 1
+                opacity: mic && !page.canVoice ? 0.4 : 1
                 Behavior on scale { ScaleAnimator { duration: 200; easing.type: Easing.OutBack } }
                 Glass {          // the mic's own round glass (the send button is the accent's colour)
                     z: -1
@@ -3403,6 +3460,8 @@ Page {
                     onPressed: (m) => {
                         if (!sendButton.mic)
                             return
+                        if (!page.canVoice)         // (voice notes are barred here)
+                            return page.toast(page.allowedText)
                         startX = m.x
                         page.startVoice()
                     }
