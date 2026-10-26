@@ -218,8 +218,18 @@ SubPage {
     // ---- one of the grid full screen (Telegram's gallery) ----
     property Item overlay: null         // the viewer and its note, over the page (not in its list)
     property var shown: null            // what the viewer shows: { file, name } (its ↓ saves it)
+    // a spoiler's cell blurred under dust until it is seen full screen (Telegram-iOS's shared media)
+    property var unveiled: ({})
+    property int unveiledTick: 0
+    function unveil(id) {
+        if (!unveiled[id]) {
+            unveiled[id] = true
+            unveiledTick++
+        }
+    }
     function view(cell) {
         const m = cell.modelData, c = m.content, v = overlay.viewer
+        unveil(m.id)
         const side = Math.round(grid.side), small = mini(m)
         const src = cell.path ? "image://pic/0/" + side + "/" + cell.path
                   : small ? "image://pic/0/" + side + "/mini/" + small : ""
@@ -280,6 +290,7 @@ SubPage {
                     return i >= 0 && grid.visible ? cells.itemAt(i) : null
                 }
                 onSave: page.save()
+                onPaged: (id) => page.unveil(id)
             }
             Rectangle {
                 id: noteBox
@@ -491,6 +502,16 @@ SubPage {
                         source: cell.path ? "image://pic/0/" + Math.round(grid.side) + "/" + cell.path : ""
                         opacity: status === Image.Ready ? 1 : 0
                         Behavior on opacity { OpacityAnimator { duration: 150 } }
+                    }
+                    Loader {        // a spoiler, until it is seen full screen
+                        anchors.fill: parent
+                        active: !!cell.modelData.content.has_spoiler && !(page.unveiledTick, page.unveiled[cell.modelData.id])
+                        sourceComponent: Veil {
+                            corner: "0"
+                            mini: page.mini(cell.modelData)
+                            pic: cell.path
+                            live: page.visible
+                        }
                     }
                     Rectangle {     // a video's length
                         visible: cell.modelData.content["@type"] === "messageVideo"

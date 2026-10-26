@@ -27,7 +27,7 @@ import threading
 os.environ.setdefault("QT_MAX_CACHED_GLYPH_SIZE", "256")
 
 from PySide6.QtCore import Property, QFileSystemWatcher, QObject, QPointF, QRectF, QSize, QSocketNotifier, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QSyntaxHighlighter, QTextCharFormat, QImage, QImageReader, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QSyntaxHighlighter, QTextCharFormat, QImage, QImageReader, QPainter, QPainterPath, QTransform
 from PySide6.QtQuick import QQuickImageProvider, QQuickView
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -507,17 +507,51 @@ def _corners(w, h, rs):
 	return path
 
 
+def _box(img, r):
+	"""Each row of a small picture blurred by a box 2r + 1 wide (its edges held), premultiplied ARGB."""
+	w, h = img.width(), img.height()
+	src = bytes(img.constBits())[:w * h * 4]	# (32 bits a pixel: rows are 4·w bytes, no padding)
+	out = bytearray(len(src))
+	k = 2 * r + 1
+	for y in range(h):
+		row = y * w * 4
+		for c in range(4):
+			v = src[row + c:row + w * 4:4]
+			s = v[0] * (r + 1) + sum(v[min(i, w - 1)] for i in range(1, r + 1))
+			for x in range(w):
+				out[row + x * 4 + c] = s // k
+				s += v[min(x + r + 1, w - 1)] - v[max(x - r, 0)]
+	return QImage(bytes(out), w, h, 4 * w, QImage.Format_ARGB32_Premultiplied).copy()
+
+
+def _blurred(src):
+	"""A spoiler's picture: only its colours left (Telegram-iOS blurs it fitted in 100 points, twice,
+	PhotoResources.swift's blurBackground). Fitted in 32 pixels, a box blur twice each way: near a
+	Gaussian; drawn large from there it stays smooth."""
+	img = src.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32_Premultiplied)
+	turn, back = QTransform().rotate(90), QTransform().rotate(-90)
+	for _ in range(2):
+		img = _box(_box(img, 2).transformed(turn), 2).transformed(back)
+	return img
+
+
 def make_pic(key, requested):
 	"""image://pic/<radius>/<width>/<path> (or .../mini/<base64>): a message's picture at the size
 	asked, cut to the middle, its corners rounded (radius 0: none; -1: a circle; "14,4,4,14": each
 	corner its own, from the top left round, as an album's pictures have them). `width` is the
 	item's in points, so the radius scales with the pixels asked. `mini` is Telegram's tiny blurred
-	preview, there before the picture is."""
+	preview, there before the picture is. .../blur/<path or mini/...>: blurred past telling what it
+	is (a spoiler's, under its dust)."""
 	radius, width, rest = key.split("/", 2)
+	blur = rest.startswith("blur/")
+	if blur:
+		rest = rest[5:]
 	if rest.startswith("mini/"):
 		src = QImage.fromData(base64.b64decode(rest[5:]))
 	else:
 		src = QImage(rest)
+	if blur and not src.isNull():
+		src = _blurred(src)
 	if requested.isValid() and requested.width() > 0 and requested.height() > 0:
 		w, h = requested.width(), requested.height()
 	else:

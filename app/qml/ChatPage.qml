@@ -420,7 +420,8 @@ Page {
     function media(c) {
         const t = c["@type"]
         const r = { picKind: "", picW: 1, picH: 1, mini: "", dur: 0, file: null, main: null, rowKind: "",
-                    fileName: "", wave: "", title: "", sub: "", anim: false, auto: false }
+                    fileName: "", wave: "", title: "", sub: "", anim: false, auto: false,
+                    spoiler: !!c.has_spoiler }     // (a photo, video or GIF sent as a spoiler)
         if (t === "messagePhoto" && c.photo.sizes.length) {
             const sizes = c.photo.sizes      // small to big
             let best = sizes[sizes.length - 1]
@@ -460,6 +461,16 @@ Page {
             Object.assign(r, { rowKind: "file", main: d.document, fileName: d.file_name || "", file: still(d.thumbnail) })
         }
         return r
+    }
+
+    // pictures sent as spoilers (has_spoiler): blurred under dust until tapped (Veil), then shown
+    // for as long as the page is open, as Telegram-iOS keeps them
+    property var unveiled: ({})      // message id -> true: its spoiler taken off
+    function unveil(id) {
+        unveiled[id] = true
+        const i = indexOf(id)
+        if (i >= 0 && messages.get(i).veiled)
+            messages.setProperty(i, "veiled", false)
     }
 
     // a photo full screen, out of its bubble; the biggest size comes in when downloaded
@@ -508,8 +519,13 @@ Page {
             messages.setProperty(i, "got", -1)
     }
 
-    // a tap on a message's media: open, play, or bring it down first (a second tap stops that)
-    function tapMedia(item) {
+    // a tap on a message's media: open, play, or bring it down first (a second tap stops that);
+    // a spoiler is taken off first, from under the finger (x, y on the picture; its middle if not given)
+    function tapMedia(item, x, y) {
+        if (item.veiled) {
+            item.blow(x, y)
+            return
+        }
         const k = item.rowKind || item.picKind
         if (k === "photo") {
             view(item)
@@ -680,7 +696,8 @@ Page {
             isPinned: !!m.is_pinned,
             // pictures sent together (one media_album_id): one bubble, a mosaic (only photos and videos)
             album: m.media_album_id && m.media_album_id !== "0" && (p.picKind === "photo" || p.picKind === "video")
-                   ? String(m.media_album_id) : ""
+                   ? String(m.media_album_id) : "",
+            veiled: p.spoiler && !unveiled[m.id]
         }
     }
 
@@ -791,7 +808,7 @@ Page {
             return null
         const r = messages.get(i)
         return { picKind: r.picKind, picW: r.picW, picH: r.picH, mini: r.mini, pic: r.pic, dur: r.dur,
-                 got: r.got, path: r.path, fileSize: r.fileSize, sending: r.sending }
+                 got: r.got, path: r.path, fileSize: r.fileSize, sending: r.sending, veiled: r.veiled }
     }
     // the mosaic `wide` across: { width, height, items: [{ id, x, y, w, h, corner }] }
     function tilesOf(g, wide) {
@@ -1560,6 +1577,8 @@ Page {
                 return
             for (let i = 0; i < Math.min(messages.count, 50); i++)
                 if (messages.get(i).msgId === oldId) {
+                    if (page.unveiled[oldId])       // (its spoiler taken off while it went)
+                        page.unveiled[m.id] = true
                     page.remember(m)
                     messages.set(i, page.row(m))
                     if (!messages.get(i).pic)       // (the delegate stays: it does not ask again by itself)
@@ -1580,6 +1599,7 @@ Page {
                     page.translateId(id)
                 messages.setProperty(i, "kind", s.kind)
                 const p = page.media(content)
+                messages.setProperty(i, "veiled", p.spoiler && !page.unveiled[id])
                 if (p.file && p.file.id !== (page.files[id] || {}).id) {
                     page.files[id] = p.file
                     messages.setProperty(i, "pic", "")
@@ -1736,6 +1756,7 @@ Page {
                 required property int replies       // a group message's answers
                 required property string said       // a service message: its words, in a pill in the middle
                 required property string album      // pictures sent together: their media_album_id
+                required property bool veiled       // a spoiler: the picture blurred under dust until tapped
                 // an album: its main one shows them all (a mosaic), the others are tucked away under it
                 readonly property var group: album !== "" ? (page.albumRev, page.albums[album] || null) : null
                 readonly property bool grouped: group !== null && group.ids.length > 1
@@ -1748,6 +1769,10 @@ Page {
                         if (tileRep.itemAt(k) && tileRep.itemAt(k).msgId === id)
                             return tileRep.itemAt(k)
                     return null
+                }
+                function blow(x, y) {       // its spoiler off, from (x, y) on the picture (its middle when not given)
+                    if (veil.item)
+                        veil.item.blow(x === undefined ? picture.width / 2 : x, y === undefined ? picture.height / 2 : y)
                 }
                 readonly property int talk: mosaic ? group.talk : comments          // the comments, an album's on one of them
                 readonly property var talkId: mosaic ? group.talkId : msgId
@@ -1945,9 +1970,10 @@ Page {
                                     const at = hold.mapToItem(tilesView, mouse.x, mouse.y)
                                     const t = tilesView.childAt(at.x, at.y)
                                     if (t && t.msgId)
-                                        page.tapMedia(t)
+                                        page.tapMedia(t, at.x - t.x, at.y - t.y)
                                 } else if (item.media || item.rowKind) {
-                                    page.tapMedia(item)
+                                    const at = hold.mapToItem(picture, mouse.x, mouse.y)
+                                    page.tapMedia(item, at.x, at.y)
                                 }
                             }
                         }
@@ -2030,6 +2056,8 @@ Page {
                                         msgId: modelData.id
                                         corner: modelData.corner
                                         cell: page.albumTick, page.albumRev, page.cellOf(modelData.id)
+                                        live: item.onScreen
+                                        onUnveiled: page.unveil(msgId)
                                         Component.onCompleted: if (!pic) page.loadPic(msgId)
                                     }
                                 }
@@ -2056,7 +2084,7 @@ Page {
                                 id: moving
                                 anchors.fill: parent
                                 readonly property bool round: item.picKind === "round"
-                                active: item.path !== "" && page.visible && item.inSight && !item.mosaic &&
+                                active: item.path !== "" && page.visible && item.inSight && !item.mosaic && !item.veiled &&
                                         ((Prefs.autoGif && (item.picKind === "gif" || item.anim)) || (round && page.roundId === item.msgId))
                                 // (handed through here: inside sourceComponent `item` is not the delegate)
                                 readonly property string file: item.path
@@ -2070,6 +2098,19 @@ Page {
                                     sound: moving.round
                                     loop: !moving.round
                                     onEnded: if (moving.round) page.roundId = 0
+                                }
+                            }
+                            Loader {        // a spoiler: blurred under its dust until tapped (the play button and
+                                id: veil        // the length stay over it, as Telegram-iOS has them)
+                                anchors.fill: parent
+                                active: item.veiled && !item.mosaic
+                                readonly property Item msg: item    // (inside sourceComponent `item` is the Loader's own)
+                                sourceComponent: Veil {
+                                    corner: picture.corner
+                                    mini: veil.msg.mini
+                                    pic: veil.msg.pic
+                                    live: veil.msg.onScreen
+                                    onGone: page.unveil(veil.msg.msgId)
                                 }
                             }
                             Rectangle {     // a video: play over it (the ring while it comes); a GIF: the ring
@@ -3189,6 +3230,7 @@ Page {
             const it = page.shownAt(id)
             return it && it.media ? it.picFace : null
         }
+        onPaged: (id) => page.unveil(id)        // (seen there, a spoiler is off here too, as on iOS)
         onSave: {
             const s = viewer.current
             if (s && s.file)

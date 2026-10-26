@@ -8,6 +8,8 @@ Item {
     property var msgId: 0
     property var cell: null             // ChatPage.cellOf: its row's media, copied
     property string corner: "14"        // Pic's radii: "tl,tr,br,bl"
+    property bool live: true            // on the screen (a spoiler's dust moves only then)
+    signal unveiled()                   // its spoiler blown off (the page keeps it off)
 
     readonly property string picKind: cell ? cell.picKind : ""
     readonly property string rowKind: ""
@@ -19,6 +21,11 @@ Item {
     readonly property bool sending: cell ? cell.sending : false
     readonly property int dur: cell ? cell.dur : 0
     readonly property real fileSize: cell ? cell.fileSize : 0
+    readonly property bool veiled: cell ? !!cell.veiled : false        // a spoiler, until tapped
+    function blow(x, y) {
+        if (veil.item)
+            veil.item.blow(x === undefined ? width / 2 : x, y === undefined ? height / 2 : y)
+    }
     readonly property real aspect: cell ? cell.picH / Math.max(cell.picW, 1) : 1     // its own shape, full screen
     readonly property real pw: width
     readonly property Item picFace: tile
@@ -40,6 +47,18 @@ Item {
         source: tile.pic ? "image://pic/" + tile.corner + "/" + Math.round(tile.width) + "/" + tile.pic : ""
         opacity: status === Image.Ready ? 1 : 0
         Behavior on opacity { OpacityAnimator { duration: 150 } }
+    }
+    Loader {            // a spoiler: blurred under its dust until tapped, each picture its own
+        id: veil
+        anchors.fill: parent
+        active: tile.veiled
+        sourceComponent: Veil {
+            corner: tile.corner
+            mini: tile.mini
+            pic: tile.pic
+            live: tile.live
+            onGone: tile.unveiled()
+        }
     }
     Rectangle {         // a video: play over it, the ring while it comes
         visible: tile.picKind === "video" || tile.got >= 0
