@@ -1783,6 +1783,19 @@ Page {
                 function tileOf(id) {       // an album's picture, or its file
                     return picLoad.item ? picLoad.item.tileOf(id) : stack.item ? stack.item.memberOf(id) : null
                 }
+                function oneAt(x, y) {      // the album's picture or file at (x, y) on the row: its message (0: none)
+                    if (mosaic && picLoad.item) {
+                        const at = item.mapToItem(picture, x, y)
+                        const t = picLoad.item.tileAt(at.x, at.y)
+                        return t ? t.msgId : 0
+                    }
+                    if (stacked && stack.item) {
+                        const at = item.mapToItem(attach, x, y)
+                        const f = stack.item.memberAt(at.x, at.y)
+                        return f ? f.msgId : 0
+                    }
+                    return 0
+                }
                 function blow(x, y) {       // its spoiler off, from (x, y) on the picture (its middle when not given)
                     if (picLoad.item)
                         picLoad.item.blow(x === undefined ? picture.width / 2 : x, y === undefined ? picture.height / 2 : y)
@@ -2110,6 +2123,9 @@ Page {
                                                 cell: page.albumTick, page.albumRev, page.cellOf(modelData.id)
                                                 live: item.onScreen
                                                 onUnveiled: page.unveil(msgId)
+                                                marks: page.picking
+                                                picking: item.pickable
+                                                picked: page.picked[modelData.id] !== undefined
                                                 Component.onCompleted: if (!pic) page.loadPic(msgId)
                                             }
                                         }
@@ -2315,6 +2331,18 @@ Page {
                                                     got: member.cell.got
                                                     here: member.cell.path !== ""
                                                     thumb: member.cell.pic
+                                                }
+                                            }
+                                            Loader {        // «Tanlash»'s mark over the icon's corner (iOS: 20 pt at 29, 26)
+                                                active: page.picking
+                                                x: 29; y: 26
+                                                sourceComponent: Check {
+                                                    width: 20; height: 20
+                                                    on: files.item.pickable
+                                                    checked: page.picked[member.msgId] !== undefined
+                                                    hollow: files.item.out ? Theme.bubbleOut : Theme.bubbleIn
+                                                    ring: Theme.grey
+                                                    ringChecked: files.item.out ? Theme.bubbleOut : Theme.bubbleIn
                                                 }
                                             }
                                             Words {
@@ -2528,10 +2556,13 @@ Page {
                         Icon { visible: item.isPicked; anchors.centerIn: parent; width: 18; height: 18; name: "check"; color: "white" }
                     }
                 }
-                MouseArea {          // while picking a tap anywhere on its row picks it (or puts it back)
-                    anchors.fill: parent
+                MouseArea {          // while picking a tap anywhere on its row picks it (or puts it back);
+                    anchors.fill: parent    // on one of an album's pictures or files, that one alone
                     visible: item.pickable
-                    onClicked: page.pick(item.ids)
+                    onClicked: (mouse) => {
+                        const one = item.oneAt(mouse.x, mouse.y)
+                        page.pick(one ? [one] : item.ids)
+                    }
                 }
                 XAnimator { id: flyX; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.23, 1.0, 0.32, 1.0, 1.0, 1.0] }
                 YAnimator { id: flyY; target: mover; to: 0; duration: 300; easing.type: Easing.BezierSpline; easing.bezierCurve: [0.19919, 0.01064, 0.27921, 0.91025, 1.0, 1.0] }

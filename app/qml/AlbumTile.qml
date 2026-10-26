@@ -10,6 +10,10 @@ Item {
     property string corner: "14"        // Pic's radii: "tl,tr,br,bl"
     property bool live: true            // on the screen (a spoiler's dust moves only then)
     signal unveiled()                   // its spoiler blown off (the page keeps it off)
+    // «Tanlash»: a mark in its corner, each picture picked alone (Telegram-iOS)
+    property bool marks: false          // the mark made (while picking, and as it goes)
+    property bool picking: false        // it shows
+    property bool picked: false
 
     readonly property string picKind: cell ? cell.picKind : ""
     readonly property string rowKind: ""
@@ -91,6 +95,17 @@ Item {
             text: Math.floor(tile.dur / 60) + ":" + String(tile.dur % 60).padStart(2, "0")
             color: "white"
             font.family: Theme.font; font.pixelSize: 12
+        }
+    }
+    Loader {            // «Tanlash»'s mark, in the top right corner (iOS: 28 pt, 2 in)
+        id: mark
+        active: tile.marks
+        readonly property real side: tile.width <= 60 ? 22 : 26
+        x: tile.width - side - 4; y: 4
+        sourceComponent: Check {
+            width: mark.side; height: mark.side
+            on: tile.picking
+            checked: tile.picked
         }
     }
 }
