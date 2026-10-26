@@ -2115,19 +2115,22 @@ Page {
                             width: item.rowKind === "file" ? (fileRow.item ? fileRow.item.width : 0) : 230
                             height: visible ? 50 : 0
                             // made only for such a message (each row made both: a voice note's 43 bars
-                            // for every message made while scrolling)
+                            // for every message made while scrolling). The message handed through
+                            // `msg`: inside sourceComponent `item` is the Loader's own (null, then the row)
                             Loader {
+                                id: audioRow
                                 active: item.rowKind === "voice" || item.rowKind === "audio"
+                                readonly property Item msg: item
                                 sourceComponent: AudioRow {
-                                    kind: item.rowKind === "audio" ? "audio" : "voice"
-                                    out: item.out
-                                    wave: item.wave
-                                    dur: item.dur
-                                    title: item.title
-                                    sub: item.sub
-                                    got: item.got
-                                    here: item.path !== ""
-                                    current: page.soundId === item.msgId
+                                    kind: audioRow.msg.rowKind === "audio" ? "audio" : "voice"
+                                    out: audioRow.msg.out
+                                    wave: audioRow.msg.wave
+                                    dur: audioRow.msg.dur
+                                    title: audioRow.msg.title
+                                    sub: audioRow.msg.sub
+                                    got: audioRow.msg.got
+                                    here: audioRow.msg.path !== ""
+                                    current: page.soundId === audioRow.msg.msgId
                                     playing: current && sound.playbackState === MediaPlayer.PlayingState
                                     at: current ? sound.position : 0
                                 }
@@ -2135,13 +2138,14 @@ Page {
                             Loader {
                                 id: fileRow
                                 active: item.rowKind === "file"
+                                readonly property Item msg: item
                                 sourceComponent: FileRow {
-                                    out: item.out
-                                    name: item.fileName
-                                    size: item.fileSize
-                                    got: item.got
-                                    here: item.path !== ""
-                                    thumb: item.pic
+                                    out: fileRow.msg.out
+                                    name: fileRow.msg.fileName
+                                    size: fileRow.msg.fileSize
+                                    got: fileRow.msg.got
+                                    here: fileRow.msg.path !== ""
+                                    thumb: fileRow.msg.pic
                                 }
                             }
                         }
