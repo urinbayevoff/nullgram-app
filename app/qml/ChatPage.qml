@@ -3526,10 +3526,13 @@ Page {
 
     AttachSheet {
         id: sheet
-        onSend: (picked, asFiles) => {
+        rights: page.rights
+        onRefused: (text) => page.toast(text)
+        onSend: (picked, asFiles, apart) => {
             if (page.gap)
                 page.fresh()
-            store.sendFiles(page.chatId, picked, field.text.trim(), page.replying ? page.replying.id : 0, asFiles, page.thread, page.silent)
+            store.sendFiles(page.chatId, picked, page.textBarred ? null : page.fieldWords(), page.replying ? page.replying.id : 0,
+                            asFiles, page.thread, page.silent, apart)
             field.text = ""
             page.replying = null
             list.down = true

@@ -448,18 +448,24 @@ class Asked(QQuickImageProvider):
 THUMBS = os.path.expanduser("~/.cache/nullgram/thumbs")
 
 
+def _still(path):
+	"""A video file's still (a frame half a second in, by ffmpeg, kept in the cache); any other
+	file itself."""
+	if os.path.splitext(path)[1].lower() not in VIDEO or not os.path.isfile(path):
+		return path
+	os.makedirs(THUMBS, exist_ok=True)
+	st = os.stat(path)
+	key = hashlib.sha1(("%s %d %d" % (path, st.st_size, st.st_mtime)).encode()).hexdigest()
+	src = os.path.join(THUMBS, key + ".jpg")
+	if not os.path.exists(src):
+		subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
+		                "-vf", "scale=320:-2", src], timeout=20)
+	return src
+
+
 def make_thumb(path, requested):
-	"""image://thumb/<path>: a still of a video file (a frame half a second in, by ffmpeg, kept in
-	the cache), or the picture itself; for the attach sheet."""
-	src = path
-	if os.path.splitext(path)[1].lower() in VIDEO:
-		os.makedirs(THUMBS, exist_ok=True)
-		st = os.stat(path)
-		key = hashlib.sha1(("%s %d %d" % (path, st.st_size, st.st_mtime)).encode()).hexdigest()
-		src = os.path.join(THUMBS, key + ".jpg")
-		if not os.path.exists(src):
-			subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", path, "-frames:v", "1",
-			                "-vf", "scale=320:-2", src], timeout=20)
+	"""image://thumb/<path>: a still of a video file, or the picture itself; for the attach sheet."""
+	src = _still(path)
 	r = QImageReader(src)
 	r.setAutoTransform(True)
 	if requested.isValid() and requested.width() > 0:
@@ -541,7 +547,7 @@ def make_pic(key, requested):
 	corner its own, from the top left round, as an album's pictures have them). `width` is the
 	item's in points, so the radius scales with the pixels asked. `mini` is Telegram's tiny blurred
 	preview, there before the picture is. .../blur/<path or mini/...>: blurred past telling what it
-	is (a spoiler's, under its dust)."""
+	is (a spoiler's, under its dust; a video file's still, one picked to go as a spoiler)."""
 	radius, width, rest = key.split("/", 2)
 	blur = rest.startswith("blur/")
 	if blur:
@@ -549,7 +555,7 @@ def make_pic(key, requested):
 	if rest.startswith("mini/"):
 		src = QImage.fromData(base64.b64decode(rest[5:]))
 	else:
-		src = QImage(rest)
+		src = QImage(_still(rest) if blur else rest)
 	if blur and not src.isNull():
 		src = _blurred(src)
 	if requested.isValid() and requested.width() > 0 and requested.height() > 0:

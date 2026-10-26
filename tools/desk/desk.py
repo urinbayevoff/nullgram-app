@@ -6,7 +6,8 @@ draws saved as pictures, taps and drags sent as a finger's.
   python3 tools/desk/desk.py tools/desk/scenes/media.py /tmp/out [--scale 2]
 
 Needs PySide6 with its add-ons (QtMultimedia), ffmpeg for the test video and voice note. A scene is a
-module with CHATS, USERS, OPEN (the chat to open, as NULLGRAM_OPEN) and STEPS: (seconds, what, ...) —
+module with CHATS, USERS, OPEN (the chat to open, as NULLGRAM_OPEN), RECENT (the phone's files for the
+attach sheet, as nullgram.py's recent()) and STEPS: (seconds, what, ...) —
 ("shot", name), ("tap", x, y), ("hold", x, y), ("drag", x1, y1, x2, y2, ms), ("eval", js) in the top
 page's scope (its ids: list, messages, viewer...), ("call", fn(view, root, world)), ("quit",). Points
 are the page's (360 × 760). NULLGRAM_APP=<dir>: another app/ (an older one, to compare: cmp.py).
@@ -33,7 +34,7 @@ for d in ("run", "home"):
 os.environ["XDG_RUNTIME_DIR"] = os.path.join(WORK, "run")
 os.environ["HOME"] = os.path.join(WORK, "home")		# its settings and caches: not the real ones
 
-from PySide6.QtCore import Property, QEvent, QObject, QPoint, QPointF, Qt, QTimer, QUrl, Signal, Slot  # noqa: E402
+from PySide6.QtCore import Property, QElapsedTimer, QEvent, QObject, QPoint, QPointF, Qt, QTimer, QUrl, Signal, Slot  # noqa: E402
 from PySide6.QtGui import QGuiApplication, QMouseEvent  # noqa: E402
 from PySide6.QtQml import QQmlEngine, QQmlExpression  # noqa: E402
 from PySide6.QtQuick import QQuickView  # noqa: E402
@@ -82,7 +83,7 @@ class Td(QObject):
 
 	@Slot(result="QVariantList")
 	def recent(self):
-		return []
+		return self.world.recent
 
 	@Slot(str, result="QVariantMap")
 	def probe(self, path):
@@ -151,9 +152,14 @@ def main():
 	td.start()
 	root = view.rootObject()
 
+	clock = QElapsedTimer()
+	clock.start()
+
 	def finger(kind, x, y, buttons):
 		g = view.mapToGlobal(QPoint(int(x), int(y)))
-		QGuiApplication.sendEvent(view, QMouseEvent(kind, QPointF(x, y), QPointF(g), Qt.LeftButton, buttons, Qt.NoModifier))
+		e = QMouseEvent(kind, QPointF(x, y), QPointF(g), Qt.LeftButton, buttons, Qt.NoModifier)
+		e.setTimestamp(clock.elapsed() + 1000)		# (all at 0, every second press is a double click: its tap lost)
+		QGuiApplication.sendEvent(view, e)
 
 	def page_scope():
 		"""The top page and the context its own ids are in (its document's: a child's, not its own)."""

@@ -1,6 +1,8 @@
 // What to send from the phone, the way Telegram-iOS's attach sheet comes up from the foot:
 // the pictures and videos (newest first, three a row), or every file; a tap picks one (its
 // number in the corner), "Yuborish" sends them (from Fayllar as files, as Telegram does). The files are td.recent's (nullgram.py).
+// ⋯ over picked pictures, as MediaPickerScreen's: as files, one by one, hidden with a spoiler (blurred
+// under dust here too). A group's `rights` (ChatPage's): what it bars is refused, a kind all barred says so.
 import QtQuick
 
 Item {
@@ -13,7 +15,21 @@ Item {
     property var files: []
     property var chosen: []             // paths, in the order picked
     property string tab: "media"
-    signal send(var picked, bool asFiles)   // asFiles: from Fayllar -- as they are, not compressed
+    property var rights: null           // ChatPage's (null: anything may be sent)
+    property var veiled: ({})           // path -> true: to go as a spoiler
+    signal send(var picked, bool asFiles, bool apart)   // asFiles: from Fayllar -- as they are, not compressed; apart: not as an album
+    signal refused(string text)         // a kind the group bars, tapped
+
+    readonly property bool mayPhotos: !rights || rights.photos
+    readonly property bool mayVideos: !rights || rights.videos
+    readonly property bool mayFiles: !rights || rights.files
+    readonly property bool spoilt: chosen.some((p) => veiled[p])
+    // what a tab says instead when none of it may go (Telegram-iOS: Conversation.(Default)RestrictedMedia)
+    readonly property string barText: {
+        const what = tab === "media" ? (mayPhotos || mayVideos ? "" : "media") : (mayFiles ? "" : "fayl")
+        return !what ? "" : rights.mine ? "Adminlar sizga bu guruhda " + what + " yuborishni cheklagan"
+                                        : "Bu guruhda " + what + " yuborib bo'lmaydi"
+    }
 
     readonly property var media: files.filter((f) => f.kind === "photo" || f.kind === "video")
     readonly property var others: files.filter((f) => f.kind !== "photo" && f.kind !== "video")
@@ -23,7 +39,9 @@ Item {
             return
         files = td.recent()
         chosen = []
-        tab = media.length || !others.length ? "media" : "files"
+        veiled = {}
+        menu.visible = false
+        tab = !mayPhotos && !mayVideos ? "files" : media.length || !others.length ? "media" : "files"
         open = true
         visible = true
         panel.y = height
@@ -36,6 +54,7 @@ Item {
         if (!open)
             return
         open = false
+        menu.visible = false
         rise.stop()
         fall.to = height
         fall.restart()
@@ -44,6 +63,32 @@ Item {
     function toggle(path) {
         const k = chosen.indexOf(path)
         chosen = k >= 0 ? chosen.filter((p) => p !== path) : chosen.concat([path])
+    }
+
+    // the picked, as they go (each with its spoiler)
+    function go(asFiles, apart) {
+        const picked = chosen.map((p) => files.find((f) => f.path === p)).filter((f) => f)
+                             .map((f) => Object.assign({ spoiler: !asFiles && !!veiled[f.path] }, f))
+        close()
+        send(picked, asFiles, apart)
+    }
+
+    // ⋯'s actions (MediaPickerScreen's: as files when none is a spoiler, not grouped when several; the spoiler set apart)
+    readonly property var actions: {
+        const n = chosen.length
+        const a = []
+        if (!spoilt && mayFiles)
+            a.push({ text: n > 1 ? "Fayllar sifatida yuborish" : "Fayl sifatida yuborish", run: () => go(true, false) })
+        if (n > 1)
+            a.push({ text: "Guruhlamasdan yuborish", run: () => go(false, true) })
+        a.push({ text: spoilt && chosen.every((p) => veiled[p]) ? "Spoylerni olib tashlash" : "Spoyler bilan yashirish", gap: a.length > 0,
+                 run: () => {
+                     const on = !chosen.every((p) => veiled[p]), v = Object.assign({}, veiled)
+                     for (const p of chosen)
+                         v[p] = on
+                     veiled = v
+                 } })
+        return a
     }
 
     Rectangle {
@@ -86,17 +131,29 @@ Item {
             }
         }
         Icon {
-            anchors.right: parent.right; anchors.rightMargin: 16
-            y: 22
+            x: 16; y: 22
             width: 22; height: 22
             name: "cross"
             color: Theme.grey
             MouseArea { anchors.fill: parent; anchors.margins: -12; onClicked: sheet.close() }
         }
+        Item {              // ⋯: how the picked pictures go
+            anchors.right: parent.right; anchors.rightMargin: 16
+            y: 22
+            width: 22; height: 22
+            visible: sheet.tab === "media" && sheet.chosen.length > 0
+            opacity: dots.pressed ? 0.5 : 1
+            Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Repeater { model: 3; Rectangle { width: 5; height: 5; radius: 2.5; color: Theme.accent } }
+            }
+            MouseArea { id: dots; anchors.fill: parent; anchors.margins: -12; onClicked: menu.visible = !menu.visible }
+        }
 
         GridView {
             id: grid
-            visible: sheet.tab === "media"
+            visible: sheet.tab === "media" && !sheet.barText
             y: 60
             width: parent.width; height: parent.height - y
             clip: true
@@ -116,6 +173,11 @@ Item {
                     source: "image://thumb/" + parent.modelData.path
                     scale: parent.picked >= 0 ? 0.9 : 1
                     Behavior on scale { ScaleAnimator { duration: 150 } }
+                    Loader {        // to go as a spoiler: blurred under dust, as it will be seen
+                        anchors.fill: parent
+                        active: !!sheet.veiled[parent.parent.modelData.path] && parent.parent.picked >= 0
+                        sourceComponent: Veil { corner: "0"; pic: parent.parent.parent.modelData.path; live: sheet.visible }
+                    }
                 }
                 Rectangle {
                     visible: parent.modelData.kind === "video"
@@ -138,13 +200,21 @@ Item {
                         font.family: Theme.font; font.pixelSize: 13; font.weight: Font.Bold
                     }
                 }
-                MouseArea { anchors.fill: parent; onClicked: sheet.toggle(parent.modelData.path) }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        const k = parent.modelData.kind
+                        if (parent.picked < 0 && !(k === "video" ? sheet.mayVideos : sheet.mayPhotos))
+                            return sheet.refused(k === "video" ? "Bu guruhda video yuborib bo'lmaydi" : "Bu guruhda rasm yuborib bo'lmaydi")
+                        sheet.toggle(parent.modelData.path)
+                    }
+                }
             }
         }
 
         ListView {
             id: rows
-            visible: sheet.tab === "files"
+            visible: sheet.tab === "files" && !sheet.barText
             y: 60
             width: parent.width; height: parent.height - y
             clip: true
@@ -177,17 +247,17 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            visible: (sheet.tab === "media" ? sheet.media : sheet.files).length === 0
+            visible: !!sheet.barText || (sheet.tab === "media" ? sheet.media : sheet.files).length === 0
             width: parent.width - 60
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
-            text: "Hech narsa topilmadi.\nRasm va fayllar ~/Pictures, ~/Downloads, ~/Videos, ~/Music papkalaridan olinadi."
+            text: sheet.barText || "Hech narsa topilmadi.\nRasm va fayllar ~/Pictures, ~/Downloads, ~/Videos, ~/Music papkalaridan olinadi."
             color: Theme.grey
             font.family: Theme.font; font.pixelSize: 15
         }
 
         Rectangle {          // send what is picked
-            visible: sheet.chosen.length > 0
+            visible: sheet.chosen.length > 0 && !sheet.barText
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom; anchors.bottomMargin: 16
             width: parent.width - 32; height: 50; radius: 25
@@ -200,10 +270,59 @@ Item {
             }
             MouseArea {
                 anchors.fill: parent
-                onClicked: {
-                    const picked = sheet.chosen.map((p) => sheet.files.find((f) => f.path === p)).filter((f) => f)
-                    sheet.close()
-                    sheet.send(picked, sheet.tab === "files")
+                onClicked: sheet.go(sheet.tab === "files", false)
+            }
+        }
+
+        MouseArea {         // ⋯'s menu open: a tap elsewhere puts it away
+            anchors.fill: parent
+            visible: menu.visible
+            onClicked: menu.visible = false
+        }
+        Rectangle {
+            id: menu
+            visible: false
+            anchors.right: parent.right; anchors.rightMargin: 8
+            y: 52
+            width: 250
+            height: menuRows.height
+            radius: 14
+            color: Theme.menu
+            border.color: Theme.separator; border.width: 0.5
+            Column {
+                id: menuRows
+                width: parent.width
+                Repeater {
+                    model: menu.visible ? sheet.actions : []
+                    Column {
+                        required property var modelData
+                        required property int index
+                        width: menuRows.width
+                        Rectangle { visible: !!parent.modelData.gap; width: parent.width; height: 8; color: Theme.highlight }
+                        Rectangle {
+                            width: parent.width; height: 46
+                            color: rowHit.pressed ? Theme.highlight : "transparent"
+                            radius: (parent.index === 0 && !parent.modelData.gap) || parent.index === sheet.actions.length - 1 ? 14 : 0
+                            Text {
+                                x: 16; anchors.verticalCenter: parent.verticalCenter
+                                text: parent.parent.modelData.text
+                                color: Theme.text
+                                font.family: Theme.font; font.pixelSize: 17
+                            }
+                            Rectangle {
+                                visible: parent.parent.index < sheet.actions.length - 1 && !sheet.actions[parent.parent.index + 1].gap
+                                anchors.bottom: parent.bottom; width: parent.width; height: 0.5; color: Theme.separator
+                            }
+                            MouseArea {
+                                id: rowHit
+                                anchors.fill: parent
+                                onClicked: {
+                                    menu.visible = false
+                                    parent.parent.modelData.run()
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

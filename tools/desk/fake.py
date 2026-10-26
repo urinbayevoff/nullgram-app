@@ -3,6 +3,7 @@ the shapes Store.qml and ChatPage.qml read. A scene builds its messages with tex
 animation(), voice(), audio(), document(), service(); test pictures (a-f: gradients with a letter,
 their minithumbnails), a short video and a voice note are made once in the desk's work folder."""
 import base64
+import json
 import os
 import subprocess
 import tempfile
@@ -178,6 +179,7 @@ class World:
 		self.messages = {}		# chat id -> its messages, newest first
 		self.groups = []
 		self.files = {}
+		self.recent = getattr(scene, "RECENT", [])
 		for c in scene.CHATS:
 			self._chat(c)
 
@@ -332,5 +334,7 @@ class World:
 			out.append({"@type": "updateDeleteMessages", "chat_id": req["chat_id"], "message_ids": ids,
 			            "is_permanent": True, "from_cache": False})
 		else:
+			if t.startswith("send"):		# (what would go: the scene's log shows it)
+				print("desk: sent", json.dumps(req, ensure_ascii=False), flush=True)
 			reply({"@type": "ok"})
 		return out

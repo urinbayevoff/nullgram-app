@@ -967,10 +967,11 @@ QtObject {
     }
 
     // files from the phone (td.recent's): pictures and videos together as an album when there are
-    // several, the rest one by one; the field's words go under the first. asFiles: all as documents
-    function sendFiles(chatId, files, caption, replyTo, asFiles, thread, silent) {
+    // several (unless `apart`), the rest one by one; the field's words ({ text, marks }) go under the
+    // first. asFiles: all as documents; a picture or video with `spoiler` goes hidden under one
+    function sendFiles(chatId, files, caption, replyTo, asFiles, thread, silent, apart) {
         const options = silent ? { "@type": "messageSendOptions", disable_notification: true } : null
-        const text = { "@type": "formattedText", text: caption || "" }
+        const text = { "@type": "formattedText", text: caption ? caption.text : "", entities: caption ? caption.marks : [] }
         // (TDLib 1.8.68: the file and its sizes go in an inputPhoto, inputVideo... of their own)
         const contents = files.map((f, k) => {
             const local = { "@type": "inputFileLocal", path: f.path }
@@ -978,11 +979,11 @@ QtObject {
             if (asFiles)
                 return { "@type": "inputMessageDocument", caption: c, document: { "@type": "inputDocument", document: local } }
             if (f.kind === "photo" && !f.path.toLowerCase().endsWith(".gif"))
-                return { "@type": "inputMessagePhoto", caption: c,
+                return { "@type": "inputMessagePhoto", caption: c, has_spoiler: !!f.spoiler,
                          photo: { "@type": "inputPhoto", photo: local, width: f.w, height: f.h } }
             if (f.kind === "video") {
                 const v = td.probe(f.path)
-                return { "@type": "inputMessageVideo", caption: c,
+                return { "@type": "inputMessageVideo", caption: c, has_spoiler: !!f.spoiler,
                          video: { "@type": "inputVideo", video: local, duration: v.duration, width: v.width,
                                   height: v.height, supports_streaming: true } }
             }
@@ -994,7 +995,7 @@ QtObject {
         const reply = replyTo ? { "@type": "inputMessageReplyToMessage", message_id: replyTo } : null
         const album = contents.filter((c) => c["@type"] === "inputMessagePhoto" || c["@type"] === "inputMessageVideo")
         const rest = contents.filter((c) => album.indexOf(c) < 0)
-        if (album.length > 1) {
+        if (album.length > 1 && !apart) {
             for (let k = 0; k < album.length; k += 10)
                 send({ "@type": "sendMessageAlbum", chat_id: chatId, topic_id: topic(thread), reply_to: k ? null : reply, options: options,
                        input_message_contents: album.slice(k, k + 10) }, check)
