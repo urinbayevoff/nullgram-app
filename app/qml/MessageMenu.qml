@@ -2,7 +2,9 @@
 // NOTES.md): the chat behind blurs, the bubble is lifted out of it and springs to where its
 // actions fit under it, the actions grow from the bubble with a small overshoot. Everything
 // that moves is an Animator (render thread); the blur is one picture taken as it opens. Over the
-// bubble, the reactions it can get in a capsule (a tap puts one on).
+// bubble, the reactions it can get in a capsule (a tap puts one on). A bubble too tall for its actions
+// under it (ContextControllerExtractedPresentationNode's scroller): its top under the reactions, the
+// actions right under it, all of it scrolled to the actions at first; a drag shows the rest.
 import QtQuick
 import QtQuick.Effects
 
@@ -54,13 +56,19 @@ Item {
         const over = menu.reactions.length ? 56 : 0     // the reactions' row over the bubble
         // as low as it is, but with room for the actions under it and the reactions and the header over it
         const restY = Math.max(ceiling + 8 + over, Math.min(homeY, floor - 16 - boxH - 8 - h))
+        // too tall for that: the pane longer than the screen, scrolled down to the actions (a bubble's
+        // place there is where it is on the screen and that far down)
+        const end = restY + h + 8 + boxH + 16
+        pane.contentHeight = Math.max(height, end + height - floor)
+        pane.contentY = pane.contentHeight - height
+        const down = pane.contentY
         strip.y = restY - over
         stripOurs = ours
         stripEdge = ours ? Math.min(width - 12, homeX + item.width) : homeX
         strip.transformOrigin = ours ? Item.BottomRight : Item.BottomLeft
         lifted.x = homeX - 8
-        lifted.y = homeY
-        box.y = Math.min(restY + h + 8, floor - 16 - boxH)
+        lifted.y = homeY + down
+        box.y = down ? restY + h + 8 : Math.min(restY + h + 8, floor - 16 - boxH)
         box.x = ours ? Math.min(width - 12, homeX + item.width) - boxWidth : Math.max(12, homeX)
         shot.scheduleUpdate()
         open = true
@@ -75,7 +83,7 @@ Item {
             return
         open = false
         opening.stop()
-        dropY.to = homeY
+        dropY.to = homeY + pane.contentY     // (back where it was on the screen, however far the pane went)
         shut.restart()
     }
 
@@ -104,126 +112,133 @@ Item {
         saturation: 0.15
         opacity: 0
     }
-    MouseArea {
+    Flickable {                 // what is over the blur: scrolls only when it is longer than the screen
+        id: pane
         anchors.fill: parent
-        onClicked: menu.close()
-    }
+        contentWidth: width
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.DragOverBounds
+        MouseArea {
+            width: pane.width; height: pane.contentHeight
+            onClicked: menu.close()
+        }
 
-    ShaderEffectSource {        // the bubble itself, lifted (8 pt either side for the tail)
-        id: lifted
-        width: (menu.bubble ? menu.bubble.width : 0) + 16
-        height: menu.bubble ? menu.bubble.height : 0
-        sourceItem: menu.bubble
-        sourceRect: Qt.rect(-8, 0, width, height)
-        hideSource: menu.visible
-        live: true
-    }
+        ShaderEffectSource {        // the bubble itself, lifted (8 pt either side for the tail)
+            id: lifted
+            width: (menu.bubble ? menu.bubble.width : 0) + 16
+            height: menu.bubble ? menu.bubble.height : 0
+            sourceItem: menu.bubble
+            sourceRect: Qt.rect(-8, 0, width, height)
+            hideSource: menu.visible
+            live: true
+        }
 
-    Rectangle {
-        id: box
-        width: menu.boxWidth
-        height: menu.boxHeight(menu.actions)
-        radius: 20
-        color: Theme.menu
-        opacity: 0
-        scale: 0.01
-        transformOrigin: Item.Top       // it grows out of the bubble's edge, from its middle
-        clip: true
-        Column {
-            anchors.fill: parent
-            Repeater {
-                model: menu.actions
-                delegate: Rectangle {
-                    required property var modelData
-                    required property int index
-                    readonly property real gap: modelData.gap ? menu.gapHeight : 0
-                    width: box.width; height: menu.rowHeight + gap
-                    color: hit.pressed ? Theme.highlight : "transparent"
-                    Rectangle {     // the band setting it apart
-                        visible: parent.gap > 0
-                        width: parent.width; height: parent.gap
-                        color: Theme.dark ? Qt.rgba(0, 0, 0, 0.3) : Qt.rgba(0, 0, 0, 0.07)
-                    }
-                    Text {          // iOS 26: the icon first, then the words
-                        width: 26; x: 14; y: parent.gap + (menu.rowHeight - height) / 2
-                        horizontalAlignment: Text.AlignHCenter
-                        text: modelData.glyph || ""
-                        color: modelData.danger ? Theme.danger : Theme.text
-                        font.family: Theme.font; font.pixelSize: 17
-                    }
-                    Text {
-                        x: 50; y: parent.gap + (menu.rowHeight - height) / 2
-                        text: modelData.text
-                        color: modelData.danger ? Theme.danger : Theme.text
-                        font.family: Theme.font; font.pixelSize: 16
-                    }
-                    Rectangle {
-                        visible: index > 0 && !parent.gap
-                        width: parent.width; height: 0.5
-                        color: Theme.separator
-                    }
-                    MouseArea {
-                        id: hit
-                        anchors.fill: parent; anchors.topMargin: parent.gap
-                        onClicked: {
-                            const run = modelData.run
-                            menu.close()
-                            run()
+        Rectangle {
+            id: box
+            width: menu.boxWidth
+            height: menu.boxHeight(menu.actions)
+            radius: 20
+            color: Theme.menu
+            opacity: 0
+            scale: 0.01
+            transformOrigin: Item.Top       // it grows out of the bubble's edge, from its middle
+            clip: true
+            Column {
+                anchors.fill: parent
+                Repeater {
+                    model: menu.actions
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+                        readonly property real gap: modelData.gap ? menu.gapHeight : 0
+                        width: box.width; height: menu.rowHeight + gap
+                        color: hit.pressed ? Theme.highlight : "transparent"
+                        Rectangle {     // the band setting it apart
+                            visible: parent.gap > 0
+                            width: parent.width; height: parent.gap
+                            color: Theme.dark ? Qt.rgba(0, 0, 0, 0.3) : Qt.rgba(0, 0, 0, 0.07)
+                        }
+                        Text {          // iOS 26: the icon first, then the words
+                            width: 26; x: 14; y: parent.gap + (menu.rowHeight - height) / 2
+                            horizontalAlignment: Text.AlignHCenter
+                            text: modelData.glyph || ""
+                            color: modelData.danger ? Theme.danger : Theme.text
+                            font.family: Theme.font; font.pixelSize: 17
+                        }
+                        Text {
+                            x: 50; y: parent.gap + (menu.rowHeight - height) / 2
+                            text: modelData.text
+                            color: modelData.danger ? Theme.danger : Theme.text
+                            font.family: Theme.font; font.pixelSize: 16
+                        }
+                        Rectangle {
+                            visible: index > 0 && !parent.gap
+                            width: parent.width; height: 0.5
+                            color: Theme.separator
+                        }
+                        MouseArea {
+                            id: hit
+                            anchors.fill: parent; anchors.topMargin: parent.gap
+                            onClicked: {
+                                const run = modelData.run
+                                menu.close()
+                                run()
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    Rectangle {          // the reactions: a tap puts one on (or takes ours off) and closes
-        id: strip
-        visible: menu.reactions.length > 0
-        width: Math.min(menu.width - 24, emojis.implicitWidth + 12); height: 48
-        // (a binding: the row's width is known only after its emoji are laid out)
-        x: menu.stripOurs ? Math.max(12, menu.stripEdge - width) : Math.max(12, Math.min(menu.stripEdge, menu.width - 12 - width))
-        radius: 24
-        color: Theme.menu
-        opacity: 0
-        scale: 0.01
-        clip: true
-        // drawn into a picture of its own at full size, which is then scaled: drawn straight at
-        // 0.01 the emoji never showed (their glyphs are made at the size first drawn)
-        layer.enabled: true
-        layer.smooth: true
-        Flickable {
-            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
-            contentWidth: emojis.implicitWidth
-            flickableDirection: Flickable.HorizontalFlick
-            Row {
-                id: emojis
-                Repeater {
-                    model: menu.reactions
-                    Item {
-                        id: cell
-                        required property string modelData
-                        width: 44; height: 48
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 38; height: 38; radius: 19
-                            color: Theme.accent
-                            opacity: 0.18
-                            visible: menu.chosen.indexOf(parent.modelData) >= 0
-                        }
-                        Text {
-                            anchors.centerIn: parent
-                            text: cell.modelData
-                            font.pixelSize: 27
-                            scale: tapEmoji.pressed ? 1.25 : 1
-                            Behavior on scale { NumberAnimation { duration: 120 } }
-                        }
-                        MouseArea {
-                            id: tapEmoji
-                            anchors.fill: parent
-                            onClicked: {
-                                const e = cell.modelData
-                                menu.close()
-                                menu.reacted(e)
+        Rectangle {          // the reactions: a tap puts one on (or takes ours off) and closes
+            id: strip
+            visible: menu.reactions.length > 0
+            width: Math.min(menu.width - 24, emojis.implicitWidth + 12); height: 48
+            // (a binding: the row's width is known only after its emoji are laid out)
+            x: menu.stripOurs ? Math.max(12, menu.stripEdge - width) : Math.max(12, Math.min(menu.stripEdge, menu.width - 12 - width))
+            radius: 24
+            color: Theme.menu
+            opacity: 0
+            scale: 0.01
+            clip: true
+            // drawn into a picture of its own at full size, which is then scaled: drawn straight at
+            // 0.01 the emoji never showed (their glyphs are made at the size first drawn)
+            layer.enabled: true
+            layer.smooth: true
+            Flickable {
+                anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
+                contentWidth: emojis.implicitWidth
+                flickableDirection: Flickable.HorizontalFlick
+                Row {
+                    id: emojis
+                    Repeater {
+                        model: menu.reactions
+                        Item {
+                            id: cell
+                            required property string modelData
+                            width: 44; height: 48
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 38; height: 38; radius: 19
+                                color: Theme.accent
+                                opacity: 0.18
+                                visible: menu.chosen.indexOf(parent.modelData) >= 0
+                            }
+                            Text {
+                                anchors.centerIn: parent
+                                text: cell.modelData
+                                font.pixelSize: 27
+                                scale: tapEmoji.pressed ? 1.25 : 1
+                                Behavior on scale { NumberAnimation { duration: 120 } }
+                            }
+                            MouseArea {
+                                id: tapEmoji
+                                anchors.fill: parent
+                                onClicked: {
+                                    const e = cell.modelData
+                                    menu.close()
+                                    menu.reacted(e)
+                                }
                             }
                         }
                     }
