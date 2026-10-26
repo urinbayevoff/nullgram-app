@@ -842,6 +842,10 @@ Page {
         return k >= 0 && k < messages.count ? messages.get(k) : undefined
     }
     // a member's media, copied out of its row (a new object: what binds to it is told)
+    function reactsOf(id) {
+        const i = indexOf(id)
+        return i < 0 ? "" : messages.get(i).reacts
+    }
     function cellOf(id) {
         const i = indexOf(id)
         if (i < 0)
@@ -1248,7 +1252,7 @@ Page {
         // its properties and the reactions it can get, both asked at once; the menu opens with both
         let props = null, reactions = null
         const both = () => { if (props && reactions) page.showMenu(item, m, props, reactions) }
-        store.send({ "@type": "getMessageAvailableReactions", chat_id: chatId, message_id: m.id, row_size: 8 }, (r) => {
+        store.send({ "@type": "getMessageAvailableReactions", chat_id: chatId, message_id: item.reactId, row_size: 8 }, (r) => {
             const list = r["@type"] === "availableReactions" ? r.top_reactions.concat(r.popular_reactions || []) : []
             reactions = list.filter((a) => a.type["@type"] === "reactionTypeEmoji" && !a.needs_premium)
                             .map((a) => a.type.emoji).filter((e, i, all) => all.indexOf(e) === i).slice(0, 12)
@@ -1305,7 +1309,7 @@ Page {
         }
         const i = page.indexOf(m.id)
         const it = i >= 0 ? list.itemAtIndex(i) : null
-        page.reacting = m.id
+        page.reacting = item.reactId
         if (it && acts.length)
             menu.show(it.face, m.out, acts, reactions, it.reactList.filter((r) => r.mine).map((r) => r.e))
     }
@@ -1862,7 +1866,10 @@ Page {
                                          : Math.max(110, Math.min(360, aspect * wide))
                 readonly property real wide: Math.min(width * 0.72, 270) - moved
                 readonly property bool overlaid: media && text === "" && !reacted     // the time over the picture
-                readonly property var reactList: reacts ? JSON.parse(reacts) : []
+                // an album's reactions are its first message's, as Telegram-iOS shows them and puts them on (topMessage)
+                readonly property var reactId: grouped ? group.ids[0] : msgId
+                readonly property string reactsShown: reactId === msgId ? reacts : (page.albumTick, page.reactsOf(reactId))
+                readonly property var reactList: reactsShown ? JSON.parse(reactsShown) : []
                 readonly property bool reacted: reactList.length > 0
                 readonly property bool translated: page.translating
                 onTranslatedChanged: if (translated) page.translateId(msgId)
@@ -2034,32 +2041,21 @@ Page {
                             onPressed: { rise.stop(); sink.restart() }
                             onReleased: { sink.stop(); rise.restart() }
                             onCanceled: { sink.stop(); rise.restart() }
-                            // an album's picture or file under the finger (null: none, or not an album)
-                            function oneAt(x, y) {
-                                if (item.mosaic) {
-                                    const at = hold.mapToItem(picture, x, y)
-                                    return picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
-                                }
-                                if (item.stacked) {
-                                    const at = hold.mapToItem(attach, x, y)
-                                    return stack.item ? stack.item.memberAt(at.x, at.y) : null
-                                }
-                                return null
-                            }
                             onPressAndHold: (mouse) => {
-                                const one = oneAt(mouse.x, mouse.y)
-                                page.openMenu(item, one ? one.msgId : 0)
+                                const at = hold.mapToItem(item, mouse.x, mouse.y)
+                                page.openMenu(item, item.oneAt(at.x, at.y))
                             }
                             onClicked: (mouse) => {
-                                const one = oneAt(mouse.x, mouse.y)
                                 if (item.mosaic) {          // the album's picture under the finger
-                                    if (one) {
-                                        const at = one.mapFromItem(hold, mouse.x, mouse.y)
-                                        page.tapMedia(one, at.x, at.y)
-                                    }
+                                    const at = hold.mapToItem(picture, mouse.x, mouse.y)
+                                    const t = picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
+                                    if (t)
+                                        page.tapMedia(t, at.x - t.x, at.y - t.y)
                                 } else if (item.stacked) {  // the album's file under the finger
-                                    if (one)
-                                        page.tapMedia(one)
+                                    const at = hold.mapToItem(attach, mouse.x, mouse.y)
+                                    const f = stack.item ? stack.item.memberAt(at.x, at.y) : null
+                                    if (f)
+                                        page.tapMedia(f)
                                 } else if (item.media || item.rowKind) {
                                     const at = hold.mapToItem(picture, mouse.x, mouse.y)
                                     page.tapMedia(item, at.x, at.y)
@@ -2483,7 +2479,7 @@ Page {
                                         }
                                         MouseArea {
                                             anchors.fill: parent
-                                            onClicked: store.react(page.chatId, item.msgId, parent.modelData.e, !parent.modelData.mine)
+                                            onClicked: store.react(page.chatId, item.reactId, parent.modelData.e, !parent.modelData.mine)
                                         }
                                     }
                                 }
