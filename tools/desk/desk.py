@@ -12,10 +12,14 @@ attach sheet, as nullgram.py's recent()) and STEPS: (seconds, what, ...) —
 page's scope (its ids: list, messages, viewer...), ("call", fn(view, root, world)), ("quit",). Points
 are the page's (360 × 760). NULLGRAM_APP=<dir>: another app/ (an older one, to compare: cmp.py).
 
-What it is not: the phone's speed (an x86 core, software GL), its fonts, a real video playing."""
+Drawn with GL on an Xvfb screen of its own when there is Xvfb (else offscreen, by Qt's software renderer:
+no shader effects nor layers). What it is not: the phone's speed (an x86 core, GL by the CPU), its fonts,
+a real video playing."""
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -25,8 +29,31 @@ WORK = os.path.join(tempfile.gettempdir(), "nullgram-desk")
 sys.path.insert(0, APP)
 sys.path.insert(0, HERE)
 
+
+
+def screen():
+	"""A virtual X screen of its own (Xvfb), drawn on with GL (Mesa's llvmpipe): Qt Quick's own renderer,
+	as on the phone. Offscreen Qt falls back to its software one, which draws no shader effect nor layer:
+	not the menu's blur, its lifted bubble, its reactions. Without Xvfb, offscreen all the same."""
+	if os.environ.get("QT_QPA_PLATFORM") or not shutil.which("Xvfb"):
+		return None
+	r, w = os.pipe()
+	x = subprocess.Popen(["Xvfb", "-displayfd", str(w), "-screen", "0", "1600x1700x24", "-nolisten", "tcp"],
+	                     pass_fds=(w,), stderr=subprocess.DEVNULL)
+	os.close(w)
+	with os.fdopen(r) as f:
+		n = f.readline().strip()
+	if not n:
+		x.kill()
+		return None
+	os.environ["DISPLAY"] = ":" + n
+	os.environ["QT_QPA_PLATFORM"] = "xcb"
+	return x
+
+
 scale = sys.argv[sys.argv.index("--scale") + 1] if "--scale" in sys.argv else "2"
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+xvfb = screen()
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["QT_SCALE_FACTOR"] = scale
 os.environ["QSG_USE_SIMPLE_ANIMATION_DRIVER"] = "1"		# (as nullgram.py: animations by the clock)
 for d in ("run", "home"):
@@ -157,7 +184,8 @@ def main():
 
 	def finger(kind, x, y, buttons):
 		g = view.mapToGlobal(QPoint(int(x), int(y)))
-		e = QMouseEvent(kind, QPointF(x, y), QPointF(g), Qt.LeftButton, buttons, Qt.NoModifier)
+		button = Qt.NoButton if kind == QEvent.MouseMove else Qt.LeftButton		# (a move with the button: a press again)
+		e = QMouseEvent(kind, QPointF(x, y), QPointF(g), button, buttons, Qt.NoModifier)
 		e.setTimestamp(clock.elapsed() + 1000)		# (all at 0, every second press is a double click: its tap lost)
 		QGuiApplication.sendEvent(view, e)
 
@@ -204,6 +232,9 @@ def main():
 	for step in scene.STEPS:
 		QTimer.singleShot(int(step[0] * 1000), lambda s=step: run(s))
 	code = app.exec()
+	if xvfb:
+		xvfb.kill()
+		xvfb.wait()
 	sys.stdout.flush()
 	os._exit(code)
 
