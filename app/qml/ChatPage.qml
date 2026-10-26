@@ -1233,14 +1233,18 @@ Page {
         unfolded = u
     }
 
-    function openMenu(item) {
+    // `one`: an album's picture or file under the finger (its id), as Telegram-iOS puts the one pressed
+    // first: «Nusxalash» takes its caption; a picture without one the album's, a file without one none
+    function openMenu(item, one) {
         if (page.kb > 0) {          // the keyboard down first, over the menu's actions it would stay
             field.focus = false
             osk.hide()
         }
+        const own = one && one !== item.msgId ? cellOf(one) : null
         const m = { id: item.msgId, text: item.text, kind: item.kind, out: item.out,
                     name: item.out ? "Siz" : item.sender || (chat ? chat.title : ""),
-                    ids: item.grouped ? item.group.ids : [item.msgId] }     // (an album: all of it)
+                    ids: item.grouped ? item.group.ids : [item.msgId],      // (an album: all of it)
+                    copy: own && (own.text || item.stacked) ? own.text : item.text }
         // its properties and the reactions it can get, both asked at once; the menu opens with both
         let props = null, reactions = null
         const both = () => { if (props && reactions) page.showMenu(item, m, props, reactions) }
@@ -1261,8 +1265,8 @@ Page {
         const acts = []
         if (ok && p.can_be_replied && !page.channel)
             acts.push({ text: "Javob yozish", glyph: "↩", run: () => page.reply(m) })
-        if (m.text)
-            acts.push({ text: "Nusxalash", glyph: "⧉", run: () => page.copy(m.text) })
+        if (m.copy)
+            acts.push({ text: "Nusxalash", glyph: "⧉", run: () => page.copy(m.copy) })
         if (ok && p.can_be_edited && !m.kind && !item.media && !item.rowKind)
             acts.push({ text: "Tahrirlash", glyph: "✎", run: () => page.edit(m) })
         if (m.text && !page.translating)        // this one alone in Uzbek, and back
@@ -2030,18 +2034,32 @@ Page {
                             onPressed: { rise.stop(); sink.restart() }
                             onReleased: { sink.stop(); rise.restart() }
                             onCanceled: { sink.stop(); rise.restart() }
-                            onPressAndHold: page.openMenu(item)
+                            // an album's picture or file under the finger (null: none, or not an album)
+                            function oneAt(x, y) {
+                                if (item.mosaic) {
+                                    const at = hold.mapToItem(picture, x, y)
+                                    return picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
+                                }
+                                if (item.stacked) {
+                                    const at = hold.mapToItem(attach, x, y)
+                                    return stack.item ? stack.item.memberAt(at.x, at.y) : null
+                                }
+                                return null
+                            }
+                            onPressAndHold: (mouse) => {
+                                const one = oneAt(mouse.x, mouse.y)
+                                page.openMenu(item, one ? one.msgId : 0)
+                            }
                             onClicked: (mouse) => {
+                                const one = oneAt(mouse.x, mouse.y)
                                 if (item.mosaic) {          // the album's picture under the finger
-                                    const at = hold.mapToItem(picture, mouse.x, mouse.y)
-                                    const t = picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
-                                    if (t)
-                                        page.tapMedia(t, at.x - t.x, at.y - t.y)
+                                    if (one) {
+                                        const at = one.mapFromItem(hold, mouse.x, mouse.y)
+                                        page.tapMedia(one, at.x, at.y)
+                                    }
                                 } else if (item.stacked) {  // the album's file under the finger
-                                    const at = hold.mapToItem(attach, mouse.x, mouse.y)
-                                    const f = stack.item ? stack.item.memberAt(at.x, at.y) : null
-                                    if (f)
-                                        page.tapMedia(f)
+                                    if (one)
+                                        page.tapMedia(one)
                                 } else if (item.media || item.rowKind) {
                                     const at = hold.mapToItem(picture, mouse.x, mouse.y)
                                     page.tapMedia(item, at.x, at.y)
@@ -2397,7 +2415,7 @@ Page {
                                                 open: !!page.unfolded[member.msgId]
                                                 onLink: (url) => page.follow(url, member.msgId)
                                                 onTouched: (down) => { if (down) { rise.stop(); sink.restart() } else { sink.stop(); rise.restart() } }
-                                                onHeld: page.openMenu(item)
+                                                onHeld: page.openMenu(item, member.msgId)
                                                 onTapped: page.tapMedia(member)
                                                 onFold: page.unfold(member.msgId)
                                             }
