@@ -1418,6 +1418,17 @@ Page {
     // «Tanlash» (Telegram-iOS: the menu's last, set apart): messages picked by a tap each — a circle on
     // each one's left, «N ta tanlandi» over them, under them deleting and forwarding them all at once
     property bool selecting: false
+    // the rows' circles made while picking, and kept as they go (450 ms: their slide out)
+    property bool picking: false
+    onSelectingChanged: {
+        if (selecting) {
+            unpicked.stop()
+            picking = true
+        } else {
+            unpicked.restart()
+        }
+    }
+    Timer { id: unpicked; interval: 450; onTriggered: page.picking = false }
     property var picked: ({})           // id → its messageProperties (null until TDLib answers)
     readonly property var pickedIds: Object.keys(picked).map(Number).sort((a, b) => a - b)  // oldest first
     function startPicking(ids) {
@@ -1765,14 +1776,11 @@ Page {
                 readonly property var tiles: mosaic ? page.tilesOf(group, wide) : null
                 readonly property var ids: grouped ? group.ids : [msgId]
                 function tileOf(id) {
-                    for (let k = 0; k < tileRep.count; k++)
-                        if (tileRep.itemAt(k) && tileRep.itemAt(k).msgId === id)
-                            return tileRep.itemAt(k)
-                    return null
+                    return picLoad.item ? picLoad.item.tileOf(id) : null
                 }
                 function blow(x, y) {       // its spoiler off, from (x, y) on the picture (its middle when not given)
-                    if (veil.item)
-                        veil.item.blow(x === undefined ? picture.width / 2 : x, y === undefined ? picture.height / 2 : y)
+                    if (picLoad.item)
+                        picLoad.item.blow(x === undefined ? picture.width / 2 : x, y === undefined ? picture.height / 2 : y)
                 }
                 readonly property int talk: mosaic ? group.talk : comments          // the comments, an album's on one of them
                 readonly property var talkId: mosaic ? group.talkId : msgId
@@ -1855,7 +1863,7 @@ Page {
                     color: Theme.bar
                     Text {
                         anchors.centerIn: parent
-                        text: "O'qilmagan xabarlar"
+                        text: item.unreadBar ? "O'qilmagan xabarlar" : ""
                         color: Theme.grey
                         font.family: Theme.font; font.pixelSize: 13
                     }
@@ -1967,9 +1975,9 @@ Page {
                             onPressAndHold: page.openMenu(item)
                             onClicked: (mouse) => {
                                 if (item.mosaic) {          // the album's picture under the finger
-                                    const at = hold.mapToItem(tilesView, mouse.x, mouse.y)
-                                    const t = tilesView.childAt(at.x, at.y)
-                                    if (t && t.msgId)
+                                    const at = hold.mapToItem(picture, mouse.x, mouse.y)
+                                    const t = picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
+                                    if (t)
                                         page.tapMedia(t, at.x - t.x, at.y - t.y)
                                 } else if (item.media || item.rowKind) {
                                     const at = hold.mapToItem(picture, mouse.x, mouse.y)
@@ -1994,47 +2002,54 @@ Page {
                             x: 12; y: who.visible ? who.y + who.height + 1 : 7
                             width: Math.min(implicitWidth, item.most - 24)
                             elide: Text.ElideRight
-                            text: "Uzatilgan xabar\n" + item.fwd
+                            text: item.fwd ? "Uzatilgan xabar\n" + item.fwd : ""     // (laid out only when shown)
                             color: item.out ? Theme.check : Theme.accent
                             lineHeight: 0.95
                             font.family: Theme.font; font.pixelSize: 14
                         }
                         // the lowest of the name and the forward line: what comes next goes under it
                         readonly property Item head: fwdText.visible ? fwdText : who
-                        Rectangle {     // what it answers: a bar, the name, a line of the text; a tap goes there
-                            id: quote
-                            visible: item.replyId !== 0
-                            readonly property color ink: item.out ? Theme.check : Theme.accent
-                            readonly property real wants: Math.max(quoteWho.implicitWidth, Math.min(quoteWhat.implicitWidth, 220)) + 22
+                        Loader {        // what it answers: a bar, the name, a line of the text; a tap goes there
+                            id: quote       // (made only for a reply; inside, `item` is the message again: answer's own)
+                            active: item.replyId !== 0
+                            visible: active
+                            readonly property real wants: quote.item ? quote.item.wants : 0
                             x: 8
                             y: bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 8
                             width: bubble.width - 16
                             height: visible ? 40 : 0
-                            radius: 6
-                            color: Qt.rgba(ink.r, ink.g, ink.b, 0.12)
-                            clip: true
-                            Rectangle { width: 3; height: parent.height; color: quote.ink }
-                            Text {
-                                id: quoteWho
-                                x: 11; y: 3
-                                width: parent.width - 16
-                                elide: Text.ElideRight
-                                text: item.quoteName
-                                color: quote.ink
-                                font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                            readonly property Item msg: item
+                            sourceComponent: Rectangle {
+                                id: answer
+                                readonly property Item item: quote.msg
+                                readonly property color ink: item.out ? Theme.check : Theme.accent
+                                readonly property real wants: Math.max(quoteWho.implicitWidth, Math.min(quoteWhat.implicitWidth, 220)) + 22
+                                radius: 6
+                                color: Qt.rgba(ink.r, ink.g, ink.b, 0.12)
+                                clip: true
+                                Rectangle { width: 3; height: parent.height; color: answer.ink }
+                                Text {
+                                    id: quoteWho
+                                    x: 11; y: 3
+                                    width: parent.width - 16
+                                    elide: Text.ElideRight
+                                    text: item.quoteName
+                                    color: answer.ink
+                                    font.family: Theme.font; font.pixelSize: 13; font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    id: quoteWhat
+                                    x: 11; y: 20
+                                    width: parent.width - 16
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    textFormat: Text.PlainText
+                                    text: item.quoteText.replace(/\s+/g, " ")
+                                    color: item.out ? Theme.outText : Theme.inText
+                                    font.family: Theme.font; font.pixelSize: 14
+                                }
+                                MouseArea { anchors.fill: parent; onClicked: page.jump(item.replyId) }
                             }
-                            Text {
-                                id: quoteWhat
-                                x: 11; y: 20
-                                width: parent.width - 16
-                                elide: Text.ElideRight
-                                maximumLineCount: 1
-                                textFormat: Text.PlainText
-                                text: item.quoteText.replace(/\s+/g, " ")
-                                color: item.out ? Theme.outText : Theme.inText
-                                font.family: Theme.font; font.pixelSize: 14
-                            }
-                            MouseArea { anchors.fill: parent; onClicked: page.jump(item.replyId) }
                         }
                         Item {          // the picture: Telegram's blurred preview at once, the picture over it when here
                             id: picture
@@ -2043,108 +2058,135 @@ Page {
                             y: item.bare ? 0 : quote.visible ? quote.y + quote.height + 4 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 3
                             width: item.pw; height: visible ? item.ph : 0
                             readonly property string corner: item.picKind === "round" ? "-1" : item.bare ? "0" : "14"
-                            Item {      // an album's: each its own picture
-                                id: tilesView
-                                visible: item.mosaic
+                            // what is in it made only for a message with a picture (a text's row made all of it,
+                            // two dozen hidden things). Inside, `item` is the message again (block's): the
+                            // Loader is the context object there, its own `item` would come first
+                            Loader {
+                                id: picLoad
                                 anchors.fill: parent
-                                Repeater {
-                                    id: tileRep
-                                    model: item.mosaic ? item.tiles.items : []
-                                    AlbumTile {
-                                        required property var modelData
-                                        x: modelData.x; y: modelData.y; width: modelData.w; height: modelData.h
-                                        msgId: modelData.id
-                                        corner: modelData.corner
-                                        cell: page.albumTick, page.albumRev, page.cellOf(modelData.id)
-                                        live: item.onScreen
-                                        onUnveiled: page.unveil(msgId)
-                                        Component.onCompleted: if (!pic) page.loadPic(msgId)
+                                active: item.media
+                                readonly property Item msg: item
+                                sourceComponent: Item {
+                                    id: block
+                                    readonly property Item item: picLoad.msg
+                                    function tileOf(id) {
+                                        for (let k = 0; k < tileRep.count; k++)
+                                            if (tileRep.itemAt(k) && tileRep.itemAt(k).msgId === id)
+                                                return tileRep.itemAt(k)
+                                        return null
                                     }
-                                }
-                            }
-                            Image {
-                                anchors.fill: parent
-                                visible: item.mini !== "" && full.status !== Image.Ready && !item.mosaic
-                                asynchronous: true
-                                // (in points: Qt asks the provider for these times the pixel ratio)
-                                sourceSize: Qt.size(12, 12 * item.ph / item.pw)     // blurred: small is enough
-                                source: item.mini ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/mini/" + item.mini : ""
-                                smooth: true
-                            }
-                            Image {
-                                id: full
-                                anchors.fill: parent
-                                asynchronous: true
-                                sourceSize: Qt.size(Math.round(item.pw), Math.round(item.ph))
-                                source: item.pic && !item.mosaic ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/" + item.pic : ""
-                                opacity: status === Image.Ready ? 1 : 0
-                                Behavior on opacity { OpacityAnimator { duration: 150 } }
-                            }
-                            Loader {        // a GIF (or a video sticker) over and over; a round video tapped, once with sound
-                                id: moving
-                                anchors.fill: parent
-                                readonly property bool round: item.picKind === "round"
-                                active: item.path !== "" && page.visible && item.inSight && !item.mosaic && !item.veiled &&
-                                        ((Prefs.autoGif && (item.picKind === "gif" || item.anim)) || (round && page.roundId === item.msgId))
-                                // (handed through here: inside sourceComponent `item` is not the delegate)
-                                readonly property string file: item.path
-                                // paused, not taken apart, under the gallery: made anew all at once as it
-                                // closed they held up the frames of its flight back
-                                readonly property bool playing: !viewer.open && (round || item.onScreen)
-                                sourceComponent: InlineVideo {
-                                    path: moving.file
-                                    running: moving.playing
-                                    radius: Number(picture.corner)
-                                    sound: moving.round
-                                    loop: !moving.round
-                                    onEnded: if (moving.round) page.roundId = 0
-                                }
-                            }
-                            Loader {        // a spoiler: blurred under its dust until tapped (the play button and
-                                id: veil        // the length stay over it, as Telegram-iOS has them)
-                                anchors.fill: parent
-                                active: item.veiled && !item.mosaic
-                                readonly property Item msg: item    // (inside sourceComponent `item` is the Loader's own)
-                                sourceComponent: Veil {
-                                    corner: picture.corner
-                                    mini: veil.msg.mini
-                                    pic: veil.msg.pic
-                                    live: veil.msg.onScreen
-                                    onGone: page.unveil(veil.msg.msgId)
-                                }
-                            }
-                            Rectangle {     // a video: play over it (the ring while it comes); a GIF: the ring
-                                visible: !item.mosaic && (item.got >= 0 || item.picKind === "video" || (item.picKind === "gif" && !item.path)
-                                                            || (item.picKind === "round" && page.roundId !== item.msgId))
-                                anchors.centerIn: parent
-                                width: 48; height: 48; radius: 24
-                                color: Qt.rgba(0, 0, 0, 0.45)
-                                Icon {
-                                    visible: item.got < 0
-                                    anchors.centerIn: parent
-                                    anchors.horizontalCenterOffset: name === "play" ? 1.5 : 0
-                                    width: 24; height: 24
-                                    name: item.path || item.picKind === "video" ? "play" : "down"
-                                    color: "white"
-                                }
-                                Ring {
-                                    visible: item.got >= 0
-                                    anchors.fill: parent
-                                    value: item.got
-                                }
-                            }
-                            Rectangle {
-                                visible: !item.mosaic && (item.picKind === "video" || item.picKind === "gif" || item.picKind === "round")
-                                x: 6; y: item.picKind === "round" ? parent.height - 26 : 6
-                                width: len.implicitWidth + 12; height: 20; radius: 10
-                                color: Qt.rgba(0, 0, 0, 0.45)
-                                Text {
-                                    id: len
-                                    anchors.centerIn: parent
-                                    text: item.picKind === "gif" ? "GIF" : Math.floor(item.dur / 60) + ":" + String(item.dur % 60).padStart(2, "0")
-                                          + (item.picKind === "video" && !item.path && item.fileSize ? " · " + store.size(item.fileSize) : "")
-                                    color: "white"
-                                    font.family: Theme.font; font.pixelSize: 12
+                                    function tileAt(x, y) {         // the album's picture there
+                                        const t = tilesView.childAt(x, y)
+                                        return t && t.msgId ? t : null
+                                    }
+                                    function blow(x, y) {
+                                        if (veil.item)
+                                            veil.item.blow(x, y)
+                                    }
+                                    Item {      // an album's: each its own picture
+                                        id: tilesView
+                                        visible: item.mosaic
+                                        anchors.fill: parent
+                                        Repeater {
+                                            id: tileRep
+                                            model: item.mosaic ? item.tiles.items : []
+                                            AlbumTile {
+                                                required property var modelData
+                                                x: modelData.x; y: modelData.y; width: modelData.w; height: modelData.h
+                                                msgId: modelData.id
+                                                corner: modelData.corner
+                                                cell: page.albumTick, page.albumRev, page.cellOf(modelData.id)
+                                                live: item.onScreen
+                                                onUnveiled: page.unveil(msgId)
+                                                Component.onCompleted: if (!pic) page.loadPic(msgId)
+                                            }
+                                        }
+                                    }
+                                    Image {
+                                        anchors.fill: parent
+                                        visible: item.mini !== "" && full.status !== Image.Ready && !item.mosaic
+                                        asynchronous: true
+                                        // (in points: Qt asks the provider for these times the pixel ratio)
+                                        sourceSize: Qt.size(12, 12 * item.ph / item.pw)     // blurred: small is enough
+                                        source: item.mini ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/mini/" + item.mini : ""
+                                        smooth: true
+                                    }
+                                    Image {
+                                        id: full
+                                        anchors.fill: parent
+                                        asynchronous: true
+                                        sourceSize: Qt.size(Math.round(item.pw), Math.round(item.ph))
+                                        source: item.pic && !item.mosaic ? "image://pic/" + picture.corner + "/" + Math.round(item.pw) + "/" + item.pic : ""
+                                        opacity: status === Image.Ready ? 1 : 0
+                                        Behavior on opacity { OpacityAnimator { duration: 150 } }
+                                    }
+                                    Loader {        // a GIF (or a video sticker) over and over; a round video tapped, once with sound
+                                        id: moving
+                                        anchors.fill: parent
+                                        readonly property bool round: block.item.picKind === "round"
+                                        active: block.item.path !== "" && page.visible && block.item.inSight && !block.item.mosaic && !block.item.veiled &&
+                                                ((Prefs.autoGif && (block.item.picKind === "gif" || block.item.anim)) || (round && page.roundId === block.item.msgId))
+                                        // (handed through here: inside sourceComponent `item` is not the delegate)
+                                        readonly property string file: block.item.path
+                                        // paused, not taken apart, under the gallery: made anew all at once as it
+                                        // closed they held up the frames of its flight back
+                                        readonly property bool playing: !viewer.open && (round || block.item.onScreen)
+                                        sourceComponent: InlineVideo {
+                                            path: moving.file
+                                            running: moving.playing
+                                            radius: Number(picture.corner)
+                                            sound: moving.round
+                                            loop: !moving.round
+                                            onEnded: if (moving.round) page.roundId = 0
+                                        }
+                                    }
+                                    Loader {        // a spoiler: blurred under its dust until tapped (the play button and
+                                        id: veil        // the length stay over it, as Telegram-iOS has them)
+                                        anchors.fill: parent
+                                        active: block.item.veiled && !block.item.mosaic
+                                        readonly property Item msg: block.item     // (inside sourceComponent `item` is the Loader's own)
+                                        sourceComponent: Veil {
+                                            corner: picture.corner
+                                            mini: veil.msg.mini
+                                            pic: veil.msg.pic
+                                            live: veil.msg.onScreen
+                                            onGone: page.unveil(veil.msg.msgId)
+                                        }
+                                    }
+                                    Rectangle {     // a video: play over it (the ring while it comes); a GIF: the ring
+                                        visible: !item.mosaic && (item.got >= 0 || item.picKind === "video" || (item.picKind === "gif" && !item.path)
+                                                                    || (item.picKind === "round" && page.roundId !== item.msgId))
+                                        anchors.centerIn: parent
+                                        width: 48; height: 48; radius: 24
+                                        color: Qt.rgba(0, 0, 0, 0.45)
+                                        Icon {
+                                            visible: item.got < 0
+                                            anchors.centerIn: parent
+                                            anchors.horizontalCenterOffset: name === "play" ? 1.5 : 0
+                                            width: 24; height: 24
+                                            name: item.path || item.picKind === "video" ? "play" : "down"
+                                            color: "white"
+                                        }
+                                        Ring {
+                                            visible: item.got >= 0
+                                            anchors.fill: parent
+                                            value: item.got
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: !item.mosaic && (item.picKind === "video" || item.picKind === "gif" || item.picKind === "round")
+                                        x: 6; y: item.picKind === "round" ? parent.height - 26 : 6
+                                        width: len.implicitWidth + 12; height: 20; radius: 10
+                                        color: Qt.rgba(0, 0, 0, 0.45)
+                                        Text {
+                                            id: len
+                                            anchors.centerIn: parent
+                                            text: item.picKind === "gif" ? "GIF" : Math.floor(item.dur / 60) + ":" + String(item.dur % 60).padStart(2, "0")
+                                                  + (item.picKind === "video" && !item.path && item.fileSize ? " · " + store.size(item.fileSize) : "")
+                                            color: "white"
+                                            font.family: Theme.font; font.pixelSize: 12
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2213,39 +2255,44 @@ Page {
                             onTapped: if (!item.mosaic && (item.media || item.rowKind)) page.tapMedia(item)
                             onFold: page.unfold(item.msgId)
                         }
-                        Flow {          // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
+                        Loader {        // the reactions: emoji and how many, ours lit; a tap puts ours on or off.
                             id: reactRow    // More than a line holds go on to the next, the time by the last (Telegram-iOS)
-                            visible: item.reacted
+                            active: item.reacted        // (made only when there are; its height is the Flow's)
+                            visible: active
                             x: item.bare ? 0 : 10
                             y: body.y + body.height + (body.height ? 6 : 4)
                             readonly property real wants: item.reactList.reduce((w, r, k) =>
                                 w + chipMetrics.advanceWidth(r.e + " " + r.n) + 16 + (k ? 4 : 0), 0)
                             width: Math.min(wants + 1, bubble.width - x - 10)
-                            // the time by the last line, or under it when that line has no room
-                            property bool stampBelow: false
-                            onPositioningComplete: {
-                                const last = children.length > 1 ? children[children.length - 2] : null     // (the Repeater is last)
-                                stampBelow = !!last && last.x + last.width + stamp.implicitWidth + 12 > bubble.width - x - 10
-                            }
-                            height: visible ? implicitHeight + (stampBelow ? 18 : 0) : 0
-                            spacing: 4
-                            Repeater {
-                                model: item.reactList
-                                Rectangle {
-                                    required property var modelData
-                                    width: chipText.implicitWidth + 16; height: 28; radius: 14
-                                    readonly property color ink: item.out ? Theme.check : Theme.accent
-                                    color: modelData.mine ? ink : Qt.rgba(ink.r, ink.g, ink.b, 0.15)
-                                    Text {
-                                        id: chipText
-                                        anchors.centerIn: parent
-                                        text: parent.modelData.e + " " + parent.modelData.n
-                                        color: parent.modelData.mine ? (Theme.dark && item.out ? Theme.bubbleOut : "white") : parent.ink
-                                        font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        onClicked: store.react(page.chatId, item.msgId, parent.modelData.e, !parent.modelData.mine)
+                            readonly property Item msg: item
+                            sourceComponent: Flow {
+                                readonly property Item item: reactRow.msg
+                                // the time by the last line, or under it when that line has no room
+                                property bool stampBelow: false
+                                onPositioningComplete: {
+                                    const last = children.length > 1 ? children[children.length - 2] : null     // (the Repeater is last)
+                                    stampBelow = !!last && last.x + last.width + stamp.implicitWidth + 12 > bubble.width - reactRow.x - 10
+                                }
+                                height: implicitHeight + (stampBelow ? 18 : 0)
+                                spacing: 4
+                                Repeater {
+                                    model: item.reactList
+                                    Rectangle {
+                                        required property var modelData
+                                        width: chipText.implicitWidth + 16; height: 28; radius: 14
+                                        readonly property color ink: item.out ? Theme.check : Theme.accent
+                                        color: modelData.mine ? ink : Qt.rgba(ink.r, ink.g, ink.b, 0.15)
+                                        Text {
+                                            id: chipText
+                                            anchors.centerIn: parent
+                                            text: parent.modelData.e + " " + parent.modelData.n
+                                            color: parent.modelData.mine ? (Theme.dark && item.out ? Theme.bubbleOut : "white") : parent.ink
+                                            font.family: Theme.font; font.pixelSize: 14; font.weight: Font.DemiBold
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: store.react(page.chatId, item.msgId, parent.modelData.e, !parent.modelData.mine)
+                                        }
                                     }
                                 }
                             }
@@ -2262,29 +2309,39 @@ Page {
                             anchors.bottom: parent.bottom; anchors.bottomMargin: bubble.tail + (item.overlaid || item.jumbo ? (item.bare ? 6 : 10) : 6)
                             spacing: 2
                             readonly property color ink: item.overlaid || item.jumbo ? "white" : item.out ? Theme.outMeta : Theme.inMeta
-                            Icon {
-                                visible: item.views > 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 14; height: 14
-                                name: "eye"; color: stamp.ink
-                            }
-                            Text {
-                                visible: item.views > 0
-                                text: store.short(item.views) + " "
-                                color: stamp.ink
-                                font.family: Theme.font; font.pixelSize: 12
-                            }
-                            Icon {
-                                visible: item.replies > 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 13; height: 13
-                                name: "reply"; color: stamp.ink
-                            }
-                            Text {
-                                visible: item.replies > 0
-                                text: item.replies + " "
-                                color: stamp.ink
-                                font.family: Theme.font; font.pixelSize: 12
+                            Loader {        // (made only when there are any)
+                                id: counts
+                                active: item.views > 0 || item.replies > 0
+                                visible: active
+                                readonly property Item msg: item
+                                sourceComponent: Row {
+                                    readonly property Item item: counts.msg
+                                    spacing: 2
+                                    Icon {
+                                        visible: item.views > 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 14; height: 14
+                                        name: "eye"; color: stamp.ink
+                                    }
+                                    Text {
+                                        visible: item.views > 0
+                                        text: store.short(item.views) + " "
+                                        color: stamp.ink
+                                        font.family: Theme.font; font.pixelSize: 12
+                                    }
+                                    Icon {
+                                        visible: item.replies > 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 13; height: 13
+                                        name: "reply"; color: stamp.ink
+                                    }
+                                    Text {
+                                        visible: item.replies > 0
+                                        text: item.replies + " "
+                                        color: stamp.ink
+                                        font.family: Theme.font; font.pixelSize: 12
+                                    }
+                                }
                             }
                             Text {
                                 textFormat: Text.StyledText
@@ -2294,54 +2351,74 @@ Page {
                                 font.family: Theme.font; font.pixelSize: 12
                             }
                         }
-                        Item {          // a channel post's comments: how many, a tap opens them
-                            visible: bubble.tail > 0
+                        Loader {        // a channel post's comments: how many, a tap opens them (made only for such a post)
+                            id: talkRow
+                            active: bubble.tail > 0
                             anchors.bottom: parent.bottom
                             width: parent.width; height: bubble.tail
-                            Rectangle { x: 12; width: parent.width - 24; height: 1; color: Theme.fieldBorder }
-                            Icon {
-                                x: 10; anchors.verticalCenter: parent.verticalCenter
-                                name: "chats"; color: Theme.accent; scale: 0.8
+                            readonly property Item msg: item
+                            sourceComponent: Item {
+                                readonly property Item item: talkRow.msg
+                                Rectangle { x: 12; width: parent.width - 24; height: 1; color: Theme.fieldBorder }
+                                Icon {
+                                    x: 10; anchors.verticalCenter: parent.verticalCenter
+                                    name: "chats"; color: Theme.accent; scale: 0.8
+                                }
+                                Text {
+                                    x: 40; anchors.verticalCenter: parent.verticalCenter
+                                    text: item.talk > 0 ? item.talk + " ta izoh" : "Izoh qoldirish"
+                                    color: Theme.accent
+                                    font.family: Theme.font; font.pixelSize: 15
+                                }
+                                Text {
+                                    anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
+                                    text: "›"
+                                    color: Theme.accent
+                                    font.family: Theme.font; font.pixelSize: 22
+                                }
+                                MouseArea { anchors.fill: parent; onClicked: page.openComments(item.talkId) }
                             }
-                            Text {
-                                x: 40; anchors.verticalCenter: parent.verticalCenter
-                                text: item.talk > 0 ? item.talk + " ta izoh" : "Izoh qoldirish"
-                                color: Theme.accent
-                                font.family: Theme.font; font.pixelSize: 15
-                            }
-                            Text {
-                                anchors.right: parent.right; anchors.rightMargin: 14; anchors.verticalCenter: parent.verticalCenter
-                                text: "›"
-                                color: Theme.accent
-                                font.family: Theme.font; font.pixelSize: 22
-                            }
-                            MouseArea { anchors.fill: parent; onClicked: page.openComments(item.talkId) }
                         }
                     }
-                    Rectangle {         // beside a channel's post: send it on (as Telegram has it)
-                        visible: page.channel && !item.out
+                    Loader {            // beside a channel's post: send it on (as Telegram has it; made only in a channel)
+                        id: share
+                        active: page.channel && !item.out
                         x: bubble.x + bubble.width + 8
                         y: bubble.y + bubble.height - bubble.tail - height
-                        width: 32; height: 32; radius: 16
-                        color: Qt.rgba(0, 0, 0, 0.22)
-                        Icon { anchors.centerIn: parent; name: "forward"; color: "white"; scale: 0.72 }
-                        MouseArea {
-                            anchors.fill: parent; anchors.margins: -6
-                            onClicked: { page.forwarding = item.ids; forwardSheet.show() }
+                        width: 32; height: 32
+                        readonly property Item msg: item
+                        sourceComponent: Rectangle {
+                            readonly property Item item: share.msg
+                            radius: 16
+                            color: Qt.rgba(0, 0, 0, 0.22)
+                            Icon { anchors.centerIn: parent; name: "forward"; color: "white"; scale: 0.72 }
+                            MouseArea {
+                                anchors.fill: parent; anchors.margins: -6
+                                onClicked: { page.forwarding = item.ids; forwardSheet.show() }
+                            }
                         }
                     }
                 }
-                Rectangle {          // «Tanlash»: its circle, filled and ticked once picked
-                    visible: opacity > 0
-                    opacity: item.pickable ? 1 : 0
-                    x: item.pickable ? 12 : -16
-                    y: item.above + (bubble.height - height) / 2
-                    width: 26; height: 26; radius: 13
-                    color: item.isPicked ? Theme.accent : Qt.rgba(0, 0, 0, 0.12)
-                    border.color: item.isPicked ? Theme.accent : "white"; border.width: 1.5
-                    Behavior on x { NumberAnimation { duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring } }
-                    Behavior on opacity { NumberAnimation { duration: 200 } }
-                    Icon { visible: item.isPicked; anchors.centerIn: parent; width: 18; height: 18; name: "check"; color: "white" }
+                Loader {             // «Tanlash»: its circle, filled and ticked once picked (made while picking and as it goes)
+                    id: circle
+                    active: page.picking
+                    readonly property Item msg: item
+                    sourceComponent: Rectangle {
+                        readonly property Item item: circle.msg
+                        // in from the left once made: Behaviors move nothing until the row is complete
+                        property bool shown: false
+                        Component.onCompleted: Qt.callLater(() => shown = Qt.binding(() => item.pickable))
+                        visible: opacity > 0
+                        opacity: shown ? 1 : 0
+                        x: shown ? 12 : -16
+                        y: item.above + (bubble.height - height) / 2
+                        width: 26; height: 26; radius: 13
+                        color: item.isPicked ? Theme.accent : Qt.rgba(0, 0, 0, 0.12)
+                        border.color: item.isPicked ? Theme.accent : "white"; border.width: 1.5
+                        Behavior on x { NumberAnimation { duration: 420; easing.type: Easing.BezierSpline; easing.bezierCurve: menu.spring } }
+                        Behavior on opacity { NumberAnimation { duration: 200 } }
+                        Icon { visible: item.isPicked; anchors.centerIn: parent; width: 18; height: 18; name: "check"; color: "white" }
+                    }
                 }
                 MouseArea {          // while picking a tap anywhere on its row picks it (or puts it back)
                     anchors.fill: parent
