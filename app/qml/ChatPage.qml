@@ -2127,7 +2127,7 @@ Page {
                             Loader {
                                 id: picLoad
                                 anchors.fill: parent
-                                active: item.media
+                                active: item.media && !item.tucked      // (an album's others: shown by its main)
                                 readonly property Item msg: item
                                 sourceComponent: Item {
                                     id: block
@@ -2269,7 +2269,7 @@ Page {
                             // `msg`: inside sourceComponent `item` is the Loader's own (null, then the row)
                             Loader {
                                 id: audioRow
-                                active: !item.stacked && (item.rowKind === "voice" || item.rowKind === "audio")
+                                active: !item.stacked && !item.tucked && (item.rowKind === "voice" || item.rowKind === "audio")
                                 readonly property Item msg: item
                                 sourceComponent: AudioRow {
                                     kind: audioRow.msg.rowKind === "audio" ? "audio" : "voice"
@@ -2287,7 +2287,7 @@ Page {
                             }
                             Loader {
                                 id: fileRow
-                                active: !item.stacked && item.rowKind === "file"
+                                active: !item.stacked && !item.tucked && item.rowKind === "file"
                                 readonly property Item msg: item
                                 sourceComponent: FileRow {
                                     out: fileRow.msg.out

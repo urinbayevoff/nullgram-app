@@ -37,7 +37,7 @@ def asset(name):
 def _picture(name):
 	"""A gradient, a white circle, a dark square and the letter: told apart at a glance, blurred or not."""
 	from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, Qt
-	from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter
+	from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath
 	w, h, c1, c2 = PICTURES[name]
 	img = QImage(w, h, QImage.Format_RGB32)
 	p = QPainter(img)
@@ -50,12 +50,14 @@ def _picture(name):
 	p.drawEllipse(QRectF(w * 0.1, h * 0.15, w * 0.3, w * 0.3))
 	p.setBrush(QColor(0, 0, 0, 140))
 	p.drawRect(QRectF(w * 0.55, h * 0.5, w * 0.35, h * 0.35))
-	p.setPen(QColor("white"))
+	# the letter as a path: nullgram.py's QT_MAX_CACHED_GLYPH_SIZE (256) leaves cached glyphs off a QImage here
 	f = QFont()
 	f.setPixelSize(int(h * 0.3))
 	f.setBold(True)
-	p.setFont(f)
-	p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, name.upper())
+	letter = QPainterPath()
+	letter.addText(0, 0, f, name.upper())
+	box = letter.boundingRect()
+	p.fillPath(letter.translated((w - box.width()) / 2 - box.x(), (h - box.height()) / 2 - box.y()), QColor("white"))
 	p.end()
 	img.save(os.path.join(ASSETS, name + ".jpg"), "JPG", 85)
 	mini = img.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
