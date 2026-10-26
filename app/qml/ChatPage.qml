@@ -694,8 +694,10 @@ Page {
             fwd: root ? "" : store.origin(m.forward_info),
             reacts: JSON.stringify(store.reactions(m.interaction_info)),
             isPinned: !!m.is_pinned,
-            // pictures sent together (one media_album_id): one bubble, a mosaic (only photos and videos)
-            album: m.media_album_id && m.media_album_id !== "0" && (p.picKind === "photo" || p.picKind === "video")
+            // sent together (one media_album_id): one bubble — photos and videos a mosaic, files or
+            // songs one under another (Telegram keeps an album to one of the three)
+            album: m.media_album_id && m.media_album_id !== "0" && (p.picKind === "photo" || p.picKind === "video"
+                                                                     || p.rowKind === "file" || p.rowKind === "audio")
                    ? String(m.media_album_id) : "",
             veiled: p.spoiler && !unveiled[m.id]
         }
@@ -808,7 +810,9 @@ Page {
             return null
         const r = messages.get(i)
         return { picKind: r.picKind, picW: r.picW, picH: r.picH, mini: r.mini, pic: r.pic, dur: r.dur,
-                 got: r.got, path: r.path, fileSize: r.fileSize, sending: r.sending, veiled: r.veiled }
+                 got: r.got, path: r.path, fileSize: r.fileSize, sending: r.sending, veiled: r.veiled,
+                 rowKind: r.rowKind, fileName: r.fileName, wave: r.wave, title: r.title, sub: r.sub,
+                 text: r.text, rich: r.rich, out: r.out }
     }
     // the mosaic `wide` across: { width, height, items: [{ id, x, y, w, h, corner }] }
     function tilesOf(g, wide) {
@@ -1772,18 +1776,21 @@ Page {
                 readonly property var group: album !== "" ? (page.albumRev, page.albums[album] || null) : null
                 readonly property bool grouped: group !== null && group.ids.length > 1
                 readonly property bool tucked: grouped && group.main !== msgId
-                readonly property bool mosaic: grouped && group.main === msgId
+                readonly property bool mosaic: grouped && group.main === msgId && rowKind === ""
+                readonly property bool stacked: grouped && group.main === msgId && rowKind !== ""     // files or songs
                 readonly property var tiles: mosaic ? page.tilesOf(group, wide) : null
                 readonly property var ids: grouped ? group.ids : [msgId]
-                function tileOf(id) {
-                    return picLoad.item ? picLoad.item.tileOf(id) : null
+                function tileOf(id) {       // an album's picture, or its file
+                    return picLoad.item ? picLoad.item.tileOf(id) : stack.item ? stack.item.memberOf(id) : null
                 }
                 function blow(x, y) {       // its spoiler off, from (x, y) on the picture (its middle when not given)
                     if (picLoad.item)
                         picLoad.item.blow(x === undefined ? picture.width / 2 : x, y === undefined ? picture.height / 2 : y)
                 }
-                readonly property int talk: mosaic ? group.talk : comments          // the comments, an album's on one of them
-                readonly property var talkId: mosaic ? group.talkId : msgId
+                readonly property int talk: mosaic || stacked ? group.talk : comments          // the comments, an album's on one of them
+                readonly property var talkId: mosaic || stacked ? group.talkId : msgId
+                // the last line of what is last in the bubble: the time goes by it when it fits
+                readonly property real lastLine: stacked ? (stack.item ? stack.item.last : 0) : body.last
                 readonly property Item face: bubble
                 readonly property Item picFace: picture
                 // a picture: photo, video or GIF in the bubble; sticker and round video without one
@@ -1933,13 +1940,13 @@ Page {
                         readonly property real stampRoom: stamp.implicitWidth + 8
                         readonly property real tail: item.talk >= 0 && !item.bare ? 42 : 0     // the comments row
 
-                        readonly property bool stampUnder: !item.overlaid && body.last + stampRoom > (item.media ? width : item.most) - 24
+                        readonly property bool stampUnder: !item.overlaid && item.lastLine + stampRoom > (item.media ? width : item.most) - 24
                         width: item.jumbo ? Math.max(body.implicitWidth, stamp.implicitWidth + 12) + 8
                              : item.bare ? item.pw : item.media ? item.pw + 6
                              : Math.min(item.most, Math.max(body.implicitWidth, who.implicitWidth, quote.visible ? quote.wants : 0,
                                                             attach.visible ? attach.width : 0, fwdText.visible ? fwdText.implicitWidth : 0,
                                                             item.reacted ? reactRow.wants + stamp.implicitWidth + 6 : 0,
-                                                            stampUnder ? stamp.implicitWidth : body.last + stampRoom, tail ? 196 : 0) + 24)
+                                                            stampUnder ? stamp.implicitWidth : item.lastLine + stampRoom, tail ? 196 : 0) + 24)
                         height: tail + (item.jumbo ? body.y + body.height + 26
                               : item.overlaid ? picture.y + item.ph + (item.bare ? 0 : 3)
                               : item.reacted ? reactRow.y + reactRow.height + 6
@@ -1979,6 +1986,11 @@ Page {
                                     const t = picLoad.item ? picLoad.item.tileAt(at.x, at.y) : null
                                     if (t)
                                         page.tapMedia(t, at.x - t.x, at.y - t.y)
+                                } else if (item.stacked) {  // the album's file under the finger
+                                    const at = hold.mapToItem(attach, mouse.x, mouse.y)
+                                    const f = stack.item ? stack.item.memberAt(at.x, at.y) : null
+                                    if (f)
+                                        page.tapMedia(f)
                                 } else if (item.media || item.rowKind) {
                                     const at = hold.mapToItem(picture, mouse.x, mouse.y)
                                     page.tapMedia(item, at.x, at.y)
@@ -2195,14 +2207,15 @@ Page {
                             visible: item.rowKind !== ""
                             x: 12
                             y: quote.visible ? quote.y + quote.height + 6 : bubble.head.visible ? bubble.head.y + bubble.head.height + 4 : 6
-                            width: item.rowKind === "file" ? (fileRow.item ? fileRow.item.width : 0) : 230
-                            height: visible ? 50 : 0
+                            width: item.stacked ? (stack.item ? stack.item.width : 0)
+                                 : item.rowKind === "file" ? (fileRow.item ? fileRow.item.width : 0) : 230
+                            height: !visible ? 0 : item.stacked ? (stack.item ? stack.item.height : 0) : 50
                             // made only for such a message (each row made both: a voice note's 43 bars
                             // for every message made while scrolling). The message handed through
                             // `msg`: inside sourceComponent `item` is the Loader's own (null, then the row)
                             Loader {
                                 id: audioRow
-                                active: item.rowKind === "voice" || item.rowKind === "audio"
+                                active: !item.stacked && (item.rowKind === "voice" || item.rowKind === "audio")
                                 readonly property Item msg: item
                                 sourceComponent: AudioRow {
                                     kind: audioRow.msg.rowKind === "audio" ? "audio" : "voice"
@@ -2220,7 +2233,7 @@ Page {
                             }
                             Loader {
                                 id: fileRow
-                                active: item.rowKind === "file"
+                                active: !item.stacked && item.rowKind === "file"
                                 readonly property Item msg: item
                                 sourceComponent: FileRow {
                                     out: fileRow.msg.out
@@ -2229,6 +2242,101 @@ Page {
                                     got: fileRow.msg.got
                                     here: fileRow.msg.path !== ""
                                     thumb: fileRow.msg.pic
+                                }
+                            }
+                            Loader {        // files or songs sent together: each under the one before, its
+                                id: stack   // caption under it, as Telegram-iOS stacks them in one bubble
+                                active: item.stacked
+                                readonly property Item msg: item
+                                sourceComponent: Column {
+                                    id: files
+                                    readonly property Item item: stack.msg
+                                    spacing: 6
+                                    // the last caption's last line (0: the last has none): the time goes by it
+                                    readonly property real last: {
+                                        const f = members.count ? members.itemAt(members.count - 1) : null
+                                        return f ? f.lastLine : 0
+                                    }
+                                    function memberOf(id) {
+                                        for (let k = 0; k < members.count; k++)
+                                            if (members.itemAt(k) && members.itemAt(k).msgId === id)
+                                                return members.itemAt(k)
+                                        return null
+                                    }
+                                    function memberAt(x, y) {
+                                        const f = childAt(x, y)
+                                        return f && f.msgId ? f : null
+                                    }
+                                    Repeater {
+                                        id: members
+                                        model: item.group ? item.group.ids : []     // (oldest first: the top)
+                                        Item {
+                                            id: member
+                                            required property var modelData
+                                            readonly property var msgId: modelData
+                                            readonly property var cell: (page.albumTick, page.albumRev, page.cellOf(modelData))
+                                            // what tapMedia and openMedia ask of a message's file
+                                            readonly property string rowKind: cell ? cell.rowKind : ""
+                                            readonly property string picKind: ""
+                                            readonly property bool media: false
+                                            readonly property bool veiled: false
+                                            readonly property real got: cell ? cell.got : -1
+                                            readonly property string path: cell ? cell.path : ""
+                                            readonly property bool sending: cell ? cell.sending : false
+                                            readonly property Item face: member
+                                            readonly property bool worded: !!cell && (cell.text !== "" || cell.rich !== "")
+                                            readonly property real lastLine: worded ? caption.last : 0
+                                            width: Math.max(rowKind === "file" ? (fileOne.item ? fileOne.item.width : 200) : 230,
+                                                            worded ? caption.width : 0)
+                                            height: 50 + (worded ? caption.height + 4 : 0)
+                                            Loader {
+                                                id: songOne
+                                                active: member.rowKind === "audio"
+                                                sourceComponent: AudioRow {
+                                                    kind: "audio"
+                                                    out: member.cell.out
+                                                    dur: member.cell.dur
+                                                    title: member.cell.title
+                                                    sub: member.cell.sub
+                                                    got: member.cell.got
+                                                    here: member.cell.path !== ""
+                                                    current: page.soundId === member.msgId
+                                                    playing: current && sound.playbackState === MediaPlayer.PlayingState
+                                                    at: current ? sound.position : 0
+                                                }
+                                            }
+                                            Loader {
+                                                id: fileOne
+                                                active: member.rowKind === "file"
+                                                sourceComponent: FileRow {
+                                                    out: member.cell.out
+                                                    name: member.cell.fileName
+                                                    size: member.cell.fileSize
+                                                    got: member.cell.got
+                                                    here: member.cell.path !== ""
+                                                    thumb: member.cell.pic
+                                                }
+                                            }
+                                            Words {
+                                                id: caption
+                                                visible: member.worded
+                                                y: 54
+                                                width: Math.min(implicitWidth, item.most - 24)
+                                                room: item.most - 24
+                                                live: item.onScreen
+                                                text: member.worded ? member.cell.text : ""
+                                                parts: member.worded ? member.cell.rich : ""
+                                                ink: item.out ? Theme.outText : Theme.inText
+                                                tint: item.out ? Theme.check : Theme.accent
+                                                open: !!page.unfolded[member.msgId]
+                                                onLink: (url) => page.follow(url, member.msgId)
+                                                onTouched: (down) => { if (down) { rise.stop(); sink.restart() } else { sink.stop(); rise.restart() } }
+                                                onHeld: page.openMenu(item)
+                                                onTapped: page.tapMedia(member)
+                                                onFold: page.unfold(member.msgId)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2243,8 +2351,8 @@ Page {
                                  : Math.min(implicitWidth, item.most - 24)
                             live: item.onScreen
                             room: item.media ? bubble.width - 24 : attach.visible ? Math.max(attach.width, item.most - 24) : item.most - 24
-                            text: (item.kind ? "[" + item.kind + "] " : "") + item.text
-                            parts: item.kind ? "" : item.rich
+                            text: item.stacked ? "" : (item.kind ? "[" + item.kind + "] " : "") + item.text     // (a stack has each caption under its file)
+                            parts: item.kind || item.stacked ? "" : item.rich
                             ink: item.out ? Theme.outText : Theme.inText
                             tint: item.out ? Theme.check : Theme.accent
                             size: item.jumbo === 1 ? 56 : item.jumbo === 2 ? 46 : item.jumbo === 3 ? 38 : 16
