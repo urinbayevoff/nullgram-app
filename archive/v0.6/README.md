@@ -26,4 +26,4 @@ Kerak: OmonullOS repo (`$OMONULLOS`, default `~/work/OmonullOS`, undagi `sdk/bin
 (`TG_API_ID=`, `TG_API_HASH=`; repo'ga kirmaydi). Telefonda: `~/.local/share/ztos/data/uz.omonullos.tepegram/`
 (`vendor/`, `api.json`, `tepegram.session`). Log: `ztos-sdk logs` (ilova papkasidan).
 
-Holat va keyingi qadamlar: [STATUS.md](STATUS.md).
+Holat va keyingi qadamlar: o'sha paytdagi STATUS.md (endi repoda yo'q).
